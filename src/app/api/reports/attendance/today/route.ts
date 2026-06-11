@@ -8,6 +8,8 @@ import { requireAuth, ok, withApi } from "@/lib/api-helpers";
 import { todayWorkDate } from "@/lib/workdate";
 import { Company } from "@/models";
 
+export const dynamic = "force-dynamic";
+
 export const GET = withApi(async (req: NextRequest) => {
   const session = await requireAuth();
   const company = await Company.findById(session.user.companyId).lean();

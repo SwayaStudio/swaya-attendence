@@ -2,6 +2,8 @@
  * Super-admin: list all users across all companies.
  */
 import { NextRequest } from "next/server";
+
+export const dynamic = "force-dynamic";
 import { connectDB } from "@/lib/db";
 import { User, Company } from "@/models";
 import { requireRole, ok, withApi } from "@/lib/api-helpers";

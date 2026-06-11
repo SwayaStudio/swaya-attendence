@@ -1,0 +1,20 @@
+ext {
+    // minSdkVersion 23 required by @capacitor-community/background-geolocation
+    minSdkVersion = 23
+    // Compile against API 34 (the one with a valid android.jar).
+    // We use JDK 17 to build (jlink works on API 34's core-for-system-modules
+    // only on JDK 17; JDK 21 has the platformString-malformed bug).
+    compileSdkVersion = 34
+    targetSdkVersion = 34
+    androidxActivityVersion = '1.7.0'
+    androidxAppCompatVersion = '1.6.1'
+    androidxCoordinatorLayoutVersion = '1.2.0'
+    androidxCoreVersion = '1.10.0'
+    androidxFragmentVersion = '1.5.6'
+    coreSplashScreenVersion = '1.0.0'
+    androidxWebkitVersion = '1.6.1'
+    junitVersion = '4.13.2'
+    androidxJunitVersion = '1.1.5'
+    androidxEspressoCoreVersion = '3.5.1'
+    cordovaAndroidVersion = '10.1.1'
+}

@@ -7,6 +7,8 @@ import { connectDB } from "@/lib/db";
 import { AttendanceDay, User } from "@/models";
 import { requireAuth, ok, withApi, fail } from "@/lib/api-helpers";
 
+export const dynamic = "force-dynamic";
+
 export const GET = withApi(async (req: NextRequest) => {
   const session = await requireAuth();
   const url = new URL(req.url);

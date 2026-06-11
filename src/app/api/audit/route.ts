@@ -3,6 +3,8 @@
  */
 import { NextRequest } from "next/server";
 import { connectDB } from "@/lib/db";
+
+export const dynamic = "force-dynamic";
 import { AuditLog } from "@/models";
 import { requireRole, ok, withApi } from "@/lib/api-helpers";
 

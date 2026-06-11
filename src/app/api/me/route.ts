@@ -4,6 +4,8 @@
  */
 import { withApi, ok, requireAuth } from "@/lib/api-helpers";
 
+export const dynamic = "force-dynamic";
+
 export const GET = withApi(async () => {
   const session = await requireAuth();
   return ok({ user: session.user });

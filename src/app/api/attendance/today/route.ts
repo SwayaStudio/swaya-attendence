@@ -3,6 +3,8 @@ import { connectDB } from "@/lib/db";
 import { AttendanceDay, AttendanceSession, WorkSite, EmployeeSchedule, ShiftTemplate } from "@/models";
 import { requireAuth } from "@/lib/api-helpers";
 import { ok, withApi } from "@/lib/api-helpers";
+
+export const dynamic = "force-dynamic";
 import { todayWorkDate } from "@/lib/workdate";
 import { Company } from "@/models";
 

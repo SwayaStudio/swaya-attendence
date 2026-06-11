@@ -59,7 +59,7 @@ export function Sidebar({ role }: { role: string }) {
   else nav = empNav;
 
   return (
-    <aside className="w-64 flex-shrink-0 border-r bg-card">
+    <aside className="hidden w-64 flex-shrink-0 border-r bg-card md:block">
       <div className="flex h-14 items-center border-b px-4 font-semibold">
         Geo Attendance
       </div>
