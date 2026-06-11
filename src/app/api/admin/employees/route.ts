@@ -17,7 +17,7 @@ export const GET = withApi(async (req: NextRequest) => {
   if (role) filter.role = role;
   const users = await User.find(filter).sort({ fullName: 1 }).lean();
   // strip sensitive
-  const safe = users.map((u) => ({
+  const safe = users.map((u: { _id: unknown; fullName: string; email: string; role: string; employeeCode?: string; department?: string; designation?: string; isActive: boolean; managerId?: unknown }) => ({
     id: String(u._id),
     fullName: u.fullName,
     email: u.email,

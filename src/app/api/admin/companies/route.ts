@@ -18,8 +18,8 @@ export const GET = withApi(async () => {
   await requireRole(["super_admin"]);
   const companies = await Company.find().sort({ createdAt: -1 }).lean();
   const enriched = await Promise.all(
-    companies.map(async (c) => {
-      const count = await User.countDocuments({ companyId: c._id });
+    companies.map(async (c: { _id: unknown; name: string; timezone: string; isActive: boolean; createdAt: Date; updatedAt: Date }) => {
+      const count = await User.countDocuments({ companyId: c._id as never });
       return { ...c, userCount: count };
     })
   );

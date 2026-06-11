@@ -26,7 +26,7 @@ export const GET = withApi(async (req: NextRequest) => {
     .lean();
 
   // For each day, fetch geofence events + outside logs
-  const dayIds = days.map((d) => d._id);
+  const dayIds = days.map((d: { _id: unknown }) => d._id);
   const [events, logs, sessions] = await Promise.all([
     GeofenceEvent.find({ attendanceDayId: { $in: dayIds } })
       .sort({ eventAt: 1 })

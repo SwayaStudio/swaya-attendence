@@ -17,7 +17,7 @@ export const GET = withApi(async (req: NextRequest) => {
   const filter: any = { companyId: session.user.companyId, workDate };
   if (session.user.role === "manager") {
     const team = await User.find({ managerId: session.user.id }).select("_id").lean();
-    filter.employeeId = { $in: team.map((u) => u._id) };
+    filter.employeeId = { $in: team.map((u: { _id: unknown }) => u._id) };
   } else if (session.user.role === "employee") {
     filter.employeeId = session.user.id;
   }
@@ -26,12 +26,12 @@ export const GET = withApi(async (req: NextRequest) => {
 
   const summary = {
     total: days.length,
-    present: days.filter((d) => d.status === "present").length,
-    late: days.filter((d) => d.status === "late").length,
-    absent: days.filter((d) => d.status === "absent").length,
-    half_day: days.filter((d) => d.status === "half_day").length,
-    flagged: days.filter((d) => d.isFlagged).length,
-    on_leave: days.filter((d) => d.status === "on_leave").length,
+    present: days.filter((d: { status: string }) => d.status === "present").length,
+    late: days.filter((d: { status: string }) => d.status === "late").length,
+    absent: days.filter((d: { status: string }) => d.status === "absent").length,
+    half_day: days.filter((d: { status: string }) => d.status === "half_day").length,
+    flagged: days.filter((d: { isFlagged: boolean }) => d.isFlagged).length,
+    on_leave: days.filter((d: { status: string }) => d.status === "on_leave").length,
   };
 
   return ok({ summary, days });

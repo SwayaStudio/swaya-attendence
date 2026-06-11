@@ -10,11 +10,13 @@ export const SignupSchema = z.object({
   password: z.string().min(8).max(200),
   timezone: z.string().default("Asia/Kolkata"),
 });
+export type SignupInput = z.infer<typeof SignupSchema>;
 
 export const LoginSchema = z.object({
   email: z.string().email().transform((s) => s.toLowerCase().trim()),
   password: z.string().min(1),
 });
+export type LoginInput = z.infer<typeof LoginSchema>;
 
 export const LocationSchema = z.object({
   lat: z.number().gte(-90).lte(90),

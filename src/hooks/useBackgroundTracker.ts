@@ -85,7 +85,7 @@ export function useBackgroundTracker(opts: {
             accuracy: pos.coords.accuracy,
           });
         },
-        (err) => onError?.(err as Error),
+        (err) => onError?.(err as unknown as Error),
         { enableHighAccuracy: true, timeout: 8000, maximumAge: 1000 }
       );
     }

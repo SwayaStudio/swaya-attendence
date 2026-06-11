@@ -10,8 +10,8 @@ export const GET = withApi(async (req: NextRequest) => {
   await requireRole(["super_admin"]);
   const users = await User.find().select("fullName email role companyId isActive").lean();
   const companies = await Company.find().select("name").lean();
-  const cMap = new Map(companies.map((c) => [String(c._id), c.name]));
-  const enriched = users.map((u) => ({
+  const cMap = new Map(companies.map((c: { _id: unknown; name: string }) => [String(c._id), c.name]));
+  const enriched = users.map((u: { _id: unknown; fullName: string; email: string; role: string; isActive: boolean; companyId: unknown }) => ({
     id: String(u._id),
     fullName: u.fullName,
     email: u.email,

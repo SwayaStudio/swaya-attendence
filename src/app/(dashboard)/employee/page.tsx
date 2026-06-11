@@ -73,7 +73,9 @@ export default function EmployeePage() {
       setLastLng(coords.longitude);
 
       // battery
-      const bat = (await navigator.getBattery())?.level;
+      const bat = await (navigator as Navigator & { getBattery?: () => Promise<{ level: number }> }).getBattery?.()
+        .then((b) => b.level)
+        .catch(() => undefined);
       setBattery(bat != null ? Math.round(bat * 100) : null);
       setNetwork(navigator.onLine ? "mobile_data" : "offline");
 
@@ -186,7 +188,7 @@ export default function EmployeePage() {
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
                 <Label className="text-muted-foreground">Check-in</Label>
-                <p>{formatTime(session.checkInAt)}</p>
+                <p>{formatTime(currentSession.checkInAt)}</p>
               </div>
               {today?.day?.lastCheckOutAt && (
                 <div>

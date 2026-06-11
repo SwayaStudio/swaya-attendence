@@ -17,7 +17,7 @@ export const GET = withApi(async (req: NextRequest) => {
   } else if (session.user.role === "manager") {
     // team
     const team = await User.find({ managerId: new Types.ObjectId(session.user.id) }).select("_id").lean();
-    filter.employeeId = { $in: team.map((u) => u._id) };
+    filter.employeeId = { $in: team.map((u: { _id: unknown }) => u._id) };
   }
   const requests = await RegularizationRequest.find(filter)
     .sort({ createdAt: -1 })

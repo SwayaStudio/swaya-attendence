@@ -60,7 +60,7 @@ export async function findSiteForCheckIn(opts: {
   if (assignments.length === 0) return null;
 
   const sites = await WorkSite.find({
-    _id: { $in: assignments.map((a) => a.siteId) },
+    _id: { $in: assignments.map((a: { siteId: unknown }) => a.siteId) },
     isActive: true,
   }).lean();
 
@@ -474,7 +474,7 @@ export async function processPings(opts: {
   const allPings = await LocationPing.find({ sessionId: session._id })
     .sort({ capturedAt: 1 })
     .lean();
-  const pingLikes: PingLike[] = allPings.map((p) => ({
+  const pingLikes: PingLike[] = allPings.map((p: { location: { coordinates: [number, number] }; accuracyMeters: number; isMockLocation: boolean; capturedAt: Date }) => ({
     lat: p.location.coordinates[1],
     lng: p.location.coordinates[0],
     accuracyMeters: p.accuracyMeters,

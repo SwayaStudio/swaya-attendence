@@ -16,7 +16,7 @@ export const GET = withApi(async (req: NextRequest) => {
     filter.employeeId = new Types.ObjectId(session.user.id);
   } else if (session.user.role === "manager") {
     const team = await User.find({ managerId: new Types.ObjectId(session.user.id) }).select("_id").lean();
-    filter.employeeId = { $in: team.map((u) => u._id) };
+    filter.employeeId = { $in: team.map((u: { _id: unknown }) => u._id) };
   }
   const leaves = await LeaveRequest.find(filter).sort({ createdAt: -1 }).limit(500).lean();
   return ok({ leaves });

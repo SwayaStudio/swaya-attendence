@@ -61,7 +61,18 @@ export async function seed() {
   await db.collection("companies").insertOne(company);
 
   // Users
-  const users = [
+  const users: Array<{
+    _id: mongoose.Types.ObjectId;
+    companyId: mongoose.Types.ObjectId;
+    fullName: string;
+    email: string;
+    passwordHash: string;
+    role: string;
+    isActive: boolean;
+    managerId?: mongoose.Types.ObjectId;
+    createdAt: Date;
+    updatedAt: Date;
+  }> = [
     { fullName: "Admin User", email: "admin@demo.com", role: "admin" },
     { fullName: "Manager User", email: "manager@demo.com", role: "manager" },
     { fullName: "Alice Employee", email: "alice@demo.com", role: "employee" },

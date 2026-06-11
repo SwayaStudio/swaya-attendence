@@ -32,17 +32,17 @@ export const GET = withApi(async (req: NextRequest) => {
     const team = await User.find({ managerId: new Types.ObjectId(session.user.id) })
       .select("_id")
       .lean();
-    filter.employeeId = { $in: team.map((u) => u._id) };
+    filter.employeeId = { $in: team.map((u: { _id: unknown }) => u._id) };
   }
 
   const days = await AttendanceDay.find(filter).sort({ workDate: -1 }).limit(5000).lean();
-  const userIds = Array.from(new Set(days.map((d) => String(d.employeeId))));
+  const userIds = Array.from(new Set(days.map((d: { employeeId: unknown }) => String(d.employeeId))));
   const users = await User.find({ _id: { $in: userIds } })
     .select("_id fullName employeeCode email")
     .lean();
-  const userMap = new Map(users.map((u) => [String(u._id), u]));
+  const userMap = new Map(users.map((u: { _id: unknown; fullName: string; employeeCode?: string; email: string }) => [String(u._id), u]));
 
-  const rows = days.map((d) => {
+  const rows = days.map((d: { employeeId: unknown }) => {
     const u = userMap.get(String(d.employeeId)) || ({} as any);
     return {
       ...d,

@@ -109,7 +109,7 @@ async function main() {
   });
 
   await EmployeeSiteAssignment.insertMany(
-    employees.map((e) => ({
+    employees.map((e: { _id: typeof company._id }) => ({
       companyId: company._id,
       employeeId: e._id,
       siteId: site._id,
