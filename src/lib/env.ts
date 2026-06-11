@@ -1,0 +1,80 @@
+/**
+ * Environment variable validation and defaults.
+ * Loads once at boot, exposes a typed `env` object.
+ * Falls back gracefully when SMTP creds are absent (console transport).
+ */
+import { randomBytes } from "crypto";
+
+const DEFAULTS = {
+  MONGODB_DB_NAME: "attendance",
+  NEXTAUTH_URL: "http://localhost:3000",
+  DEFAULT_TIMEZONE: "Asia/Kolkata",
+  DEFAULT_GEOFENCE_RADIUS_METERS: 150,
+  PING_INTERVAL_MS: 180_000, // 3 minutes
+  MAX_PING_ACCURACY_METERS: 100,
+  MOCK_LOCATION_SPEED_KMH: 200,
+  EMAIL_FROM: "Geo Attendance <noreply@geo-attendance.local>",
+} as const;
+
+function readSecret(): string {
+  const fromEnv = process.env.NEXTAUTH_SECRET;
+  if (fromEnv && fromEnv.length >= 16) return fromEnv;
+  // In dev, fall back to a process-lifetime secret (with a loud warning).
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("NEXTAUTH_SECRET must be set in production (>=16 chars).");
+  }
+  if (!globalThis.__DEV_NEXTAUTH_SECRET) {
+    globalThis.__DEV_NEXTAUTH_SECRET = randomBytes(32).toString("hex");
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[env] NEXTAUTH_SECRET not set — generated an ephemeral one. Set it in .env.local for stable sessions."
+    );
+  }
+  return globalThis.__DEV_NEXTAUTH_SECRET;
+}
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __DEV_NEXTAUTH_SECRET: string | undefined;
+}
+
+function num(key: string, fallback: number): number {
+  const v = process.env[key];
+  if (!v) return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+export const env = {
+  MONGODB_URI: process.env.MONGODB_URI ?? "",
+  MONGODB_DB_NAME: process.env.MONGODB_DB_NAME || DEFAULTS.MONGODB_DB_NAME,
+  NEXTAUTH_URL: process.env.NEXTAUTH_URL || DEFAULTS.NEXTAUTH_URL,
+  NEXTAUTH_SECRET: readSecret(),
+  DEFAULT_TIMEZONE:
+    process.env.DEFAULT_TIMEZONE || DEFAULTS.DEFAULT_TIMEZONE,
+  DEFAULT_GEOFENCE_RADIUS_METERS: num(
+    "DEFAULT_GEOFENCE_RADIUS_METERS",
+    DEFAULTS.DEFAULT_GEOFENCE_RADIUS_METERS
+  ),
+  PING_INTERVAL_MS: num("PING_INTERVAL_MS", DEFAULTS.PING_INTERVAL_MS),
+  MAX_PING_ACCURACY_METERS: num(
+    "MAX_PING_ACCURACY_METERS",
+    DEFAULTS.MAX_PING_ACCURACY_METERS
+  ),
+  MOCK_LOCATION_SPEED_KMH: num(
+    "MOCK_LOCATION_SPEED_KMH",
+    DEFAULTS.MOCK_LOCATION_SPEED_KMH
+  ),
+  SMTP_HOST: process.env.SMTP_HOST || "",
+  SMTP_PORT: num("SMTP_PORT", 587),
+  SMTP_USER: process.env.SMTP_USER || "",
+  SMTP_PASS: process.env.SMTP_PASS || "",
+  EMAIL_FROM: process.env.EMAIL_FROM || DEFAULTS.EMAIL_FROM,
+  NODE_ENV: process.env.NODE_ENV || "development",
+};
+
+export const isEmailConfigured = Boolean(
+  env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS
+);
+
+export const isMongoConfigured = Boolean(env.MONGODB_URI);
