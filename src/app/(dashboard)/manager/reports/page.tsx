@@ -37,7 +37,7 @@ export default function ManagerReportsPage() {
           <CardTitle>Filter</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-3 gap-3 items-end">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
             <div>
               <Label>From</Label>
               <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
@@ -56,7 +56,8 @@ export default function ManagerReportsPage() {
 
       <Card>
         <CardContent className="p-0">
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full whitespace-nowrap text-sm">
             <thead>
               <tr className="border-b text-left text-muted-foreground">
                 <th className="p-3">Date</th>
@@ -85,6 +86,7 @@ export default function ManagerReportsPage() {
               )}
             </tbody>
           </table>
+          </div>
         </CardContent>
       </Card>
     </div>

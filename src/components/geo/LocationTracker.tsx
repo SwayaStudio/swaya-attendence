@@ -3,11 +3,18 @@
 import { useEffect } from "react";
 import { useBackgroundTracker } from "@/hooks/useBackgroundTracker";
 
-export function LocationTracker({ active }: { active: boolean }) {
+export function LocationTracker({
+  active,
+  onAutoCheckout,
+}: {
+  active: boolean;
+  onAutoCheckout?: () => void;
+}) {
   const { lastPing, queueSize, running } = useBackgroundTracker({
     active,
     intervalMs: 60_000,
     onError: () => {},
+    onAutoCheckout,
   });
 
   useEffect(() => {

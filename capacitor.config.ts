@@ -17,7 +17,7 @@ const config: CapacitorConfig = {
   webDir: '.next',
   // Load the live Vercel deployment instead of bundled static files.
   server: {
-    url: 'https://swaya-attendance.vercel.app',
+    url: 'https://swaya-attendence-f59x.vercel.app',
     cleartext: false,
   },
   android: {

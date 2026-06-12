@@ -25,5 +25,9 @@ export const POST = withApi(async (req: NextRequest) => {
     return fail(result.reason, 400);
   }
 
-  return ok({ received: result.received });
+  return ok({
+    received: result.received,
+    autoCheckedOut: result.autoCheckedOut ?? false,
+    autoCheckoutAt: result.autoCheckoutAt ?? null,
+  });
 });

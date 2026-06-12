@@ -26,17 +26,17 @@ export function Topbar({
   const initials = name.split(" ").map(n=>n[0]).join("").toUpperCase().slice(0,2) || "U";
 
   return (
-    <header className="flex h-14 items-center justify-between border-b bg-card px-6">
-      <div className="text-sm text-muted-foreground">
+    <header className="flex h-14 items-center justify-between gap-2 border-b bg-card pl-14 pr-3 md:px-6">
+      <div className="min-w-0 truncate text-sm text-muted-foreground">
         Logged in as <span className="font-medium text-foreground">{roleLabel}</span>
       </div>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" className="gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm font-bold">
+          <Button variant="ghost" className="max-w-[45vw] gap-2 sm:max-w-none">
+            <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm font-bold">
               {initials}
             </span>
-            {name}
+            <span className="truncate">{name}</span>
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-56">

@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "@/components/ui/toaster";
-import { Save } from "lucide-react";
+import { Save, Trash2 } from "lucide-react";
 
 type Row = { employeeId: string; siteId: string; shiftTemplateId: string; isWorkingDay: boolean };
 
@@ -16,6 +17,8 @@ export default function SchedulesPage() {
   const [shifts, setShifts] = useState<any[]>([]);
   const [workDate, setWorkDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [rows, setRows] = useState<Record<string, Row>>({});
+  // Existing saved schedules for the chosen date, keyed by employeeId.
+  const [existing, setExisting] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -29,6 +32,32 @@ export default function SchedulesPage() {
       if (sh.ok) setShifts(sh.data.shifts || []);
     });
   }, []);
+
+  // Load existing schedules for the selected date and prefill the rows so the
+  // admin can review, edit, or delete them.
+  const loadSchedules = useCallback(async (date: string) => {
+    const r = await fetch(`/api/schedules?from=${date}&to=${date}`);
+    const j = await r.json();
+    if (!j.ok) return;
+    const byEmp: Record<string, any> = {};
+    const prefilled: Record<string, Row> = {};
+    for (const sc of j.data.schedules || []) {
+      const empId = String(sc.employeeId);
+      byEmp[empId] = sc;
+      prefilled[empId] = {
+        employeeId: empId,
+        siteId: String(sc.siteId),
+        shiftTemplateId: String(sc.shiftTemplateId),
+        isWorkingDay: sc.isWorkingDay ?? true,
+      };
+    }
+    setExisting(byEmp);
+    setRows(prefilled);
+  }, []);
+
+  useEffect(() => {
+    loadSchedules(workDate);
+  }, [workDate, loadSchedules]);
 
   function setRow(employeeId: string, partial: Partial<Row>) {
     setRows((r) => ({
@@ -55,8 +84,22 @@ export default function SchedulesPage() {
     setLoading(false);
     if (json.ok) {
       toast({ title: `Saved ${entries.length} schedule entries` });
+      loadSchedules(workDate);
     } else {
       toast({ title: "Failed", description: json.error, variant: "destructive" });
+    }
+  }
+
+  async function removeSchedule(employeeId: string) {
+    const sc = existing[employeeId];
+    if (!sc) return;
+    if (!confirm("Delete this schedule entry?")) return;
+    const r = await fetch(`/api/schedules/${sc._id}`, { method: "DELETE" });
+    if (r.ok) {
+      toast({ title: "Schedule deleted" });
+      loadSchedules(workDate);
+    } else {
+      toast({ title: "Delete failed", variant: "destructive" });
     }
   }
 
@@ -80,11 +123,15 @@ export default function SchedulesPage() {
                 shiftTemplateId: shifts[0]?._id || "",
                 isWorkingDay: true,
               };
+              const isSaved = !!existing[e.id];
               return (
-                <div key={e.id} className="grid grid-cols-5 gap-2 items-center border-b pb-2">
-                  <div className="font-medium">{e.fullName}</div>
+                <div key={e.id} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2 sm:items-center border-b pb-2">
+                  <div className="font-medium lg:col-span-2 flex items-center gap-2">
+                    {e.fullName}
+                    {isSaved && <Badge variant="success">saved</Badge>}
+                  </div>
                   <select
-                    className="border rounded-md px-2 py-1 text-sm"
+                    className="w-full border rounded-md px-2 py-1 text-sm"
                     value={r.siteId}
                     onChange={(ev) => setRow(e.id, { siteId: ev.target.value })}
                   >
@@ -94,7 +141,7 @@ export default function SchedulesPage() {
                     ))}
                   </select>
                   <select
-                    className="border rounded-md px-2 py-1 text-sm"
+                    className="w-full border rounded-md px-2 py-1 text-sm"
                     value={r.shiftTemplateId}
                     onChange={(ev) => setRow(e.id, { shiftTemplateId: ev.target.value })}
                   >
@@ -111,8 +158,15 @@ export default function SchedulesPage() {
                     />
                     Working day
                   </label>
-                  <Button size="sm" onClick={() => setRow(e.id, {})}>
-                    Add
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    disabled={!isSaved}
+                    onClick={() => removeSchedule(e.id)}
+                    aria-label="Delete schedule"
+                    className="justify-self-start"
+                  >
+                    <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>
               );

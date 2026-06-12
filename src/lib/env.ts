@@ -13,6 +13,7 @@ const DEFAULTS = {
   PING_INTERVAL_MS: 180_000, // 3 minutes
   MAX_PING_ACCURACY_METERS: 100,
   MOCK_LOCATION_SPEED_KMH: 200,
+  AUTO_CHECKOUT_BUFFER_METERS: 50, // auto check-out once this far beyond the geofence radius
   EMAIL_FROM: "Geo Attendance <noreply@geo-attendance.local>",
 } as const;
 
@@ -45,6 +46,12 @@ function num(key: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function bool(key: string, fallback: boolean): boolean {
+  const v = process.env[key];
+  if (v == null || v === "") return fallback;
+  return v === "true" || v === "1" || v.toLowerCase() === "yes";
+}
+
 export const env = {
   MONGODB_URI: process.env.MONGODB_URI ?? "",
   MONGODB_DB_NAME: process.env.MONGODB_DB_NAME || DEFAULTS.MONGODB_DB_NAME,
@@ -64,6 +71,13 @@ export const env = {
   MOCK_LOCATION_SPEED_KMH: num(
     "MOCK_LOCATION_SPEED_KMH",
     DEFAULTS.MOCK_LOCATION_SPEED_KMH
+  ),
+  // Auto check-out the employee when a ping shows them beyond the geofence
+  // radius plus this buffer. Buffer absorbs GPS jitter near the boundary.
+  AUTO_CHECKOUT_ENABLED: bool("AUTO_CHECKOUT_ENABLED", true),
+  AUTO_CHECKOUT_BUFFER_METERS: num(
+    "AUTO_CHECKOUT_BUFFER_METERS",
+    DEFAULTS.AUTO_CHECKOUT_BUFFER_METERS
   ),
   SMTP_HOST: process.env.SMTP_HOST || "",
   SMTP_PORT: num("SMTP_PORT", 587),

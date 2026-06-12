@@ -247,22 +247,46 @@ export async function processCheckOut(opts: {
   timezone: string;
 }) {
   await connectDB();
-  const workDate = todayWorkDate(opts.timezone);
   const session = await AttendanceSession.findOne({
     employeeId: new Types.ObjectId(opts.employeeId),
-    status: "active",
+    status: { $in: ["active", "flagged"] },
   }).sort({ checkInAt: -1 });
   if (!session) return { ok: false as const, reason: "no_active_session" };
 
-  session.checkOutAt = new Date();
+  const { day } = await finalizeSession({
+    session,
+    lat: opts.lat,
+    lng: opts.lng,
+    accuracyMeters: opts.accuracyMeters,
+    checkOutAt: new Date(),
+    status: opts.isMockLocation ? "flagged" : "completed",
+  });
+  return { ok: true as const, session, day };
+}
+
+/**
+ * Close out an attendance session and roll its summary up to the day.
+ * Shared by manual check-out and the automatic geofence-exit check-out.
+ * `checkOutAt` is the effective end time (for auto check-out this is the
+ * moment the employee crossed the site boundary, not when we processed it).
+ */
+async function finalizeSession(opts: {
+  session: any;
+  lat: number;
+  lng: number;
+  accuracyMeters?: number;
+  checkOutAt: Date;
+  status: "completed" | "auto_closed" | "flagged";
+  autoCheckout?: boolean;
+}) {
+  const { session } = opts;
+
+  session.checkOutAt = opts.checkOutAt;
   session.checkOutLocation = { type: "Point", coordinates: [opts.lng, opts.lat] };
   session.checkOutAccuracyMeters = opts.accuracyMeters;
-  if (opts.isMockLocation) {
-    session.status = "flagged";
-  } else {
-    session.status = "completed";
-  }
-  // distance
+  session.status = opts.status;
+
+  // distance from site at check-out
   const [siteLng, siteLat] = (await WorkSite.findById(session.siteId).lean())!.location.coordinates;
   session.checkOutDistanceMeters = haversineDistanceMeters(
     { lat: siteLat, lng: siteLng },
@@ -270,25 +294,23 @@ export async function processCheckOut(opts: {
   );
   await session.save();
 
-  // Replay pings for the day
-  const pings = await LocationPing.find({
-    sessionId: session._id,
-  })
+  // Replay pings to summarise inside/outside time
+  const pings = await LocationPing.find({ sessionId: session._id })
     .sort({ capturedAt: 1 })
     .lean();
+  const { totalInside, totalOutside, outsideVisitCount } = summarizePings(
+    pings,
+    session.siteId.toString()
+  );
 
-  const { totalInside, totalOutside, outsideVisitCount } = summarizePings(pings, session.siteId.toString());
-
-  const day = await AttendanceDay.findOneAndUpdate(
-    {
-      employeeId: new Types.ObjectId(opts.employeeId),
-      workDate,
-    },
+  const day = await AttendanceDay.findByIdAndUpdate(
+    session.attendanceDayId,
     {
       $set: {
         lastCheckOutAt: session.checkOutAt,
-        totalWorkSeconds: Math.floor(
-          (session.checkOutAt.getTime() - session.checkInAt.getTime()) / 1000
+        totalWorkSeconds: Math.max(
+          0,
+          Math.floor((session.checkOutAt.getTime() - session.checkInAt.getTime()) / 1000)
         ),
         totalInsideSeconds: totalInside,
         totalOutsideSeconds: totalOutside,
@@ -298,20 +320,22 @@ export async function processCheckOut(opts: {
     { new: true }
   );
 
-  // Close any open outside logs
+  // Close any open outside logs as of the check-out time
   await OutsideSiteLog.updateMany(
     { sessionId: session._id, returnedAt: null },
-    { $set: { returnedAt: new Date(), status: "closed" } }
+    { $set: { returnedAt: session.checkOutAt, status: "closed" } }
   );
 
   if (day) {
-    // Determine final status
+    const reasons = new Set(day.flagReasons || []);
     if (totalOutside > 30 * 60) {
       day.isFlagged = true;
-      const reasons = new Set(day.flagReasons || []);
       reasons.add("excessive_outside_time");
-      day.flagReasons = Array.from(reasons);
     }
+    if (opts.autoCheckout) {
+      reasons.add("auto_checkout_left_site");
+    }
+    day.flagReasons = Array.from(reasons);
     if (day.status === "pending") day.status = "present";
     if (day.totalWorkSeconds < 4 * 3600 && day.status === "present") {
       day.status = "half_day";
@@ -395,6 +419,8 @@ export async function processPings(opts: {
   );
 
   const flagging: any[] = [];
+  let autoCheckedOut = false;
+  let autoCheckoutAt: Date | null = null;
 
   for (const p of sorted) {
     const { inside, distance } = isInsideGeofence(
@@ -468,6 +494,39 @@ export async function processPings(opts: {
       }
       currentlyInside = inside;
     }
+
+    // Automatic check-out: the employee has moved beyond the geofence radius
+    // plus a buffer (which absorbs GPS jitter near the boundary). Close the
+    // session as of the moment they crossed the site boundary.
+    if (
+      env.AUTO_CHECKOUT_ENABLED &&
+      !inside &&
+      distance > site.radiusMeters + env.AUTO_CHECKOUT_BUFFER_METERS
+    ) {
+      // The boundary crossing is the open outside log's exitedAt; fall back to
+      // this ping if no log exists (e.g. first ping already beyond the buffer).
+      const openLog = await OutsideSiteLog.findOne({
+        sessionId: session._id,
+        returnedAt: null,
+      })
+        .sort({ exitedAt: -1 })
+        .lean();
+      const leftAt = openLog ? new Date(openLog.exitedAt) : capturedAt;
+
+      await finalizeSession({
+        session,
+        lat: p.lat,
+        lng: p.lng,
+        accuracyMeters: p.accuracyMeters,
+        checkOutAt: leftAt,
+        status: "auto_closed",
+        autoCheckout: true,
+      });
+
+      autoCheckedOut = true;
+      autoCheckoutAt = leftAt;
+      break;
+    }
   }
 
   // Run mock detection over the whole session
@@ -495,5 +554,10 @@ export async function processPings(opts: {
     }
   }
 
-  return { ok: true as const, received: sorted.length };
+  return {
+    ok: true as const,
+    received: sorted.length,
+    autoCheckedOut,
+    autoCheckoutAt: autoCheckoutAt ? autoCheckoutAt.toISOString() : null,
+  };
 }

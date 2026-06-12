@@ -22,12 +22,7 @@ export default async function DashboardLayout({
       <Sidebar role={role as string} />
       <MobileNav role={role as string} />
       <div className="flex flex-1 flex-col overflow-hidden">
-        {/* Topbar has a left padding on small screens so the floating
-            hamburger button doesn't overlap the "Logged in as" label. */}
-        <div className="md:hidden" style={{ height: 0 }} />
-        <div className="pl-12 md:pl-0">
-          <Topbar userId={id} name={name || ""} role={role as string} companyId={companyId} />
-        </div>
+        <Topbar userId={id} name={name || ""} role={role as string} companyId={companyId} />
         <main className="flex-1 overflow-auto p-4 md:p-6">{children}</main>
       </div>
     </div>

@@ -137,14 +137,27 @@ export default function EmployeePage() {
     }
   };
 
+  const handleAutoCheckout = useCallback(() => {
+    toast({
+      title: "Checked out automatically",
+      description: "You left the work site, so your session was closed.",
+    });
+    setTracking(false);
+    loadToday();
+  }, [loadToday]);
+
   const status = today?.day?.status || "pending";
-  const isCheckedIn = status === "present" || status === "late";
   const site = today?.site;
   const currentSession = today?.sessions?.[0];
+  // "Checked in" means a session is still open — not the day's overall status,
+  // which stays "present"/"late" even after the employee checks out.
+  const isCheckedIn = !!today?.sessions?.some(
+    (s: any) => s.status === "active" || s.status === "flagged"
+  );
 
   return (
     <div className="space-y-6">
-      <LocationTracker active={isCheckedIn} />
+      <LocationTracker active={isCheckedIn} onAutoCheckout={handleAutoCheckout} />
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Today</h1>
         <Badge variant={status === "present" ? "success" : status === "late" ? "warning" : "secondary"}>

@@ -20,7 +20,8 @@ export default function AuditPage() {
       <h1 className="text-2xl font-bold">Audit log</h1>
       <Card>
         <CardContent className="p-0">
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full whitespace-nowrap text-sm">
             <thead>
               <tr className="border-b text-left text-muted-foreground">
                 <th className="p-3">When</th>
@@ -43,6 +44,7 @@ export default function AuditPage() {
               )}
             </tbody>
           </table>
+          </div>
         </CardContent>
       </Card>
     </div>

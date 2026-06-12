@@ -22,8 +22,9 @@ export function useBackgroundTracker(opts: {
   intervalMs?: number;
   deviceId?: string;
   onError?: (e: Error) => void;
+  onAutoCheckout?: () => void;
 }) {
-  const { active, intervalMs = 60_000, deviceId = DEFAULT_DEVICE_ID, onError } = opts;
+  const { active, intervalMs = 60_000, deviceId = DEFAULT_DEVICE_ID, onError, onAutoCheckout } = opts;
   const [lastPing, setLastPing] = useState<{ lat: number; lng: number; t: number } | null>(null);
   const [queueSize, setQueueSize] = useState(0);
   const [running, setRunning] = useState(false);
@@ -64,6 +65,9 @@ export function useBackgroundTracker(opts: {
         });
         if (!res.ok) throw new Error("ping failed: " + res.status);
         setLastPing({ lat: coords.lat, lng: coords.lng, t: Date.now() });
+        // Server may have auto-checked-out the employee for leaving the site.
+        const json = await res.json().catch(() => null);
+        if (json?.data?.autoCheckedOut) onAutoCheckout?.();
       } catch (e) {
         // queue via service worker
         try {
@@ -101,7 +105,7 @@ export function useBackgroundTracker(opts: {
       if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current);
       setRunning(false);
     };
-  }, [active, intervalMs, deviceId, onError]);
+  }, [active, intervalMs, deviceId, onError, onAutoCheckout]);
 
   return { lastPing, queueSize, running };
 }

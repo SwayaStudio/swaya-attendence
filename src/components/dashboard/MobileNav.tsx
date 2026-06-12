@@ -103,7 +103,8 @@ export function MobileNav({ role }: { role: string }) {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
-          className="left-0 top-0 h-screen w-72 max-w-[85vw] translate-x-0 translate-y-0 rounded-none p-0 data-[state=open]:slide-in-from-left data-[state=closed]:slide-out-to-left"
+          aria-describedby={undefined}
+          className="left-0 top-0 block h-screen max-h-screen w-72 max-w-[85vw] translate-x-0 translate-y-0 gap-0 rounded-none p-0 data-[state=open]:slide-in-from-left data-[state=closed]:slide-out-to-left"
         >
           <DialogTitle className="sr-only">Navigation</DialogTitle>
           <div className="flex h-14 items-center border-b px-4 font-semibold">

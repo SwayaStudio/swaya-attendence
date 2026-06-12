@@ -20,7 +20,7 @@ export const GET = withApi(async (req: NextRequest) => {
     if (from) filter.workDate.$gte = from;
     if (to) filter.workDate.$lte = to;
   }
-  const schedules = await EmployeeSchedule.find(filter).limit.lean();
+  const schedules = await EmployeeSchedule.find(filter).lean();
   return ok({ schedules });
 });
 

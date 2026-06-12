@@ -10,6 +10,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogTrigger,
   DialogFooter,
 } from "@/components/ui/dialog";
@@ -68,6 +69,9 @@ export default function CompaniesPage() {
           <DialogContent>
             <DialogHeader>
               <DialogTitle>New company</DialogTitle>
+              <DialogDescription>
+                Register a new company and its default timezone.
+              </DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
               <div>
@@ -89,7 +93,8 @@ export default function CompaniesPage() {
 
       <Card>
         <CardContent className="p-0">
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full whitespace-nowrap text-sm">
             <thead>
               <tr className="border-b text-left text-muted-foreground">
                 <th className="p-3">Name</th>
@@ -122,6 +127,7 @@ export default function CompaniesPage() {
               )}
             </tbody>
           </table>
+          </div>
         </CardContent>
       </Card>
     </div>

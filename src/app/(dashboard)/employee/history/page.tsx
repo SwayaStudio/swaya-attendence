@@ -49,7 +49,7 @@ export default function HistoryPage() {
                 </Badge>
               </div>
             </CardHeader>
-            <CardContent className="grid grid-cols-4 gap-4 text-sm">
+            <CardContent className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
               <div>
                 <span className="text-muted-foreground">In</span>
                 <p className="font-medium">{d.firstCheckInAt ? new Date(d.firstCheckInAt).toLocaleTimeString() : "—"}</p>

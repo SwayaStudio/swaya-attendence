@@ -11,11 +11,12 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogTrigger,
   DialogFooter,
 } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/toaster";
-import { MapPin, Plus, Trash2 } from "lucide-react";
+import { MapPin, Plus, Pencil, Trash2 } from "lucide-react";
 
 // Leaflet is window-dependent — load only on the client.
 const GeofenceMap = dynamic(
@@ -28,17 +29,29 @@ const MapReadOnly = dynamic(
   { ssr: false, loading: () => <div className="h-[200px] grid place-items-center">…</div> }
 );
 
+type Draft = {
+  name: string;
+  address: string;
+  lat: number;
+  lng: number;
+  radiusMeters: number;
+};
+
+const emptyDraft: Draft = {
+  name: "",
+  address: "",
+  lat: 12.971599,
+  lng: 77.594566,
+  radiusMeters: 150,
+};
+
 export default function SitesPage() {
   const [sites, setSites] = useState<any[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [draft, setDraft] = useState({
-    name: "",
-    address: "",
-    lat: 12.971599,
-    lng: 77.594566,
-    radiusMeters: 150,
-  });
+  // null = creating a new site; otherwise the id of the site being edited.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<Draft>(emptyDraft);
 
   const load = async () => {
     const res = await fetch("/api/sites");
@@ -49,19 +62,38 @@ export default function SitesPage() {
     load();
   }, []);
 
-  async function create() {
+  function openCreate() {
+    setEditingId(null);
+    setDraft(emptyDraft);
+    setOpen(true);
+  }
+
+  function openEdit(s: any) {
+    setEditingId(s._id);
+    setDraft({
+      name: s.name || "",
+      address: s.address || "",
+      lat: s.location.coordinates[1],
+      lng: s.location.coordinates[0],
+      radiusMeters: s.radiusMeters,
+    });
+    setOpen(true);
+  }
+
+  async function save() {
     setLoading(true);
-    const res = await fetch("/api/sites", {
-      method: "POST",
+    const res = await fetch(editingId ? `/api/sites/${editingId}` : "/api/sites", {
+      method: editingId ? "PATCH" : "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(draft),
     });
     const json = await res.json();
     setLoading(false);
     if (json.ok) {
-      toast({ title: "Site created" });
+      toast({ title: editingId ? "Site updated" : "Site created" });
       setOpen(false);
-      setDraft({ name: "", address: "", lat: 12.971599, lng: 77.594566, radiusMeters: 150 });
+      setEditingId(null);
+      setDraft(emptyDraft);
       load();
     } else {
       toast({ title: "Failed", description: json.error, variant: "destructive" });
@@ -82,13 +114,22 @@ export default function SitesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Work sites</h1>
-        <Dialog open={open} onOpenChange={setOpen}>
+        <Dialog
+          open={open}
+          onOpenChange={(o) => {
+            setOpen(o);
+            if (!o) setEditingId(null);
+          }}
+        >
           <DialogTrigger asChild>
-            <Button className="gap-2"><Plus className="h-4 w-4" /> New site</Button>
+            <Button className="gap-2" onClick={openCreate}><Plus className="h-4 w-4" /> New site</Button>
           </DialogTrigger>
           <DialogContent className="max-w-2xl">
             <DialogHeader>
-              <DialogTitle>New work site</DialogTitle>
+              <DialogTitle>{editingId ? "Edit work site" : "New work site"}</DialogTitle>
+              <DialogDescription>
+                Set the site location and geofence radius for attendance.
+              </DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
               <div>
@@ -99,7 +140,7 @@ export default function SitesPage() {
                 <Label>Address</Label>
                 <Input value={draft.address} onChange={(e) => setDraft({ ...draft, address: e.target.value })} />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <Label>Latitude</Label>
                   <Input
@@ -138,8 +179,8 @@ export default function SitesPage() {
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button onClick={create} disabled={loading || !draft.name}>
-                {loading ? "Saving…" : "Save site"}
+              <Button onClick={save} disabled={loading || !draft.name}>
+                {loading ? "Saving…" : editingId ? "Save changes" : "Save site"}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -158,9 +199,14 @@ export default function SitesPage() {
                     <CardTitle className="text-base">{s.name}</CardTitle>
                     {s.address && <p className="text-sm text-muted-foreground">{s.address}</p>}
                   </div>
-                  <Button variant="ghost" size="icon" onClick={() => remove(s._id)}>
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
+                  <div className="flex flex-shrink-0 gap-1">
+                    <Button variant="ghost" size="icon" onClick={() => openEdit(s)} aria-label="Edit site">
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button variant="ghost" size="icon" onClick={() => remove(s._id)} aria-label="Delete site">
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent>

@@ -4,13 +4,14 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogTrigger,
   DialogFooter,
 } from "@/components/ui/dialog";
@@ -22,24 +23,28 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "@/components/ui/toaster";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Pencil, Trash2 } from "lucide-react";
+
+const emptyDraft = {
+  fullName: "",
+  email: "",
+  password: "password123",
+  phone: "",
+  employeeCode: "",
+  department: "",
+  designation: "",
+  role: "employee",
+  siteIds: [] as string[],
+};
 
 export default function EmployeesPage() {
   const [employees, setEmployees] = useState<any[]>([]);
   const [sites, setSites] = useState<any[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [draft, setDraft] = useState<any>({
-    fullName: "",
-    email: "",
-    password: "password123",
-    phone: "",
-    employeeCode: "",
-    department: "",
-    designation: "",
-    role: "employee",
-    siteIds: [] as string[],
-  });
+  // null = creating; otherwise the id of the employee being edited.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<any>(emptyDraft);
 
   const load = async () => {
     const [a, b] = await Promise.all([
@@ -53,41 +58,94 @@ export default function EmployeesPage() {
     load();
   }, []);
 
-  async function create() {
-    setLoading(true);
-    const res = await fetch("/api/admin/employees", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(draft),
+  function openCreate() {
+    setEditingId(null);
+    setDraft(emptyDraft);
+    setOpen(true);
+  }
+
+  function openEdit(e: any) {
+    setEditingId(e.id);
+    setDraft({
+      fullName: e.fullName || "",
+      email: e.email || "",
+      password: "",
+      phone: e.phone || "",
+      employeeCode: e.employeeCode || "",
+      department: e.department || "",
+      designation: e.designation || "",
+      role: e.role || "employee",
+      siteIds: [],
     });
+    setOpen(true);
+  }
+
+  async function save() {
+    setLoading(true);
+    let res: Response;
+    if (editingId) {
+      // PATCH supports profile fields only (not email/password/site assignment).
+      res = await fetch(`/api/admin/employees/${editingId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          fullName: draft.fullName,
+          phone: draft.phone,
+          employeeCode: draft.employeeCode,
+          department: draft.department,
+          designation: draft.designation,
+          role: draft.role,
+        }),
+      });
+    } else {
+      res = await fetch("/api/admin/employees", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(draft),
+      });
+    }
     const json = await res.json();
     setLoading(false);
     if (json.ok) {
-      toast({ title: "Employee created" });
+      toast({ title: editingId ? "Employee updated" : "Employee created" });
       setOpen(false);
-      setDraft({
-        fullName: "",
-        email: "",
-        password: "password123",
-        phone: "",
-        employeeCode: "",
-        department: "",
-        designation: "",
-        role: "employee",
-        siteIds: [],
-      });
+      setEditingId(null);
+      setDraft(emptyDraft);
       load();
     } else {
       toast({ title: "Failed", description: json.error, variant: "destructive" });
     }
   }
 
-  async function deactivate(id: string) {
-    if (!confirm("Deactivate this employee?")) return;
-    const res = await fetch(`/api/admin/employees/${id}`, { method: "DELETE" });
-    if (res.ok) {
-      toast({ title: "Deactivated" });
+  async function toggleActive(e: any) {
+    const res = await fetch(`/api/admin/employees/${e.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ isActive: !e.isActive }),
+    });
+    const json = await res.json();
+    if (json.ok) {
+      toast({ title: e.isActive ? "Marked inactive" : "Marked active" });
       load();
+    } else {
+      toast({ title: "Failed", description: json.error, variant: "destructive" });
+    }
+  }
+
+  async function remove(e: any) {
+    if (
+      !confirm(
+        `Permanently delete ${e.fullName}?\n\nThis erases the employee AND all of their attendance data (sessions, history, GPS pings, schedules, assignments) from the database. This cannot be undone.`
+      )
+    )
+      return;
+    const res = await fetch(`/api/admin/employees/${e.id}`, { method: "DELETE" });
+    const json = await res.json();
+    if (json.ok) {
+      toast({ title: "Employee deleted" });
+      load();
+    } else {
+      toast({ title: "Delete failed", description: json.error, variant: "destructive" });
     }
   }
 
@@ -104,27 +162,44 @@ export default function EmployeesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Employees</h1>
-        <Dialog open={open} onOpenChange={setOpen}>
+        <Dialog
+          open={open}
+          onOpenChange={(o) => {
+            setOpen(o);
+            if (!o) setEditingId(null);
+          }}
+        >
           <DialogTrigger asChild>
-            <Button className="gap-2"><Plus className="h-4 w-4" /> New employee</Button>
+            <Button className="gap-2" onClick={openCreate}><Plus className="h-4 w-4" /> New employee</Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>New employee</DialogTitle>
+              <DialogTitle>{editingId ? "Edit employee" : "New employee"}</DialogTitle>
+              <DialogDescription>
+                {editingId
+                  ? "Update this team member's profile and role."
+                  : "Add a new team member and assign them to work sites."}
+              </DialogDescription>
             </DialogHeader>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <Label>Full name</Label>
                 <Input value={draft.fullName} onChange={(e) => setDraft({ ...draft, fullName: e.target.value })} />
               </div>
               <div>
                 <Label>Email</Label>
-                <Input value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} />
+                <Input
+                  value={draft.email}
+                  disabled={!!editingId}
+                  onChange={(e) => setDraft({ ...draft, email: e.target.value })}
+                />
               </div>
-              <div>
-                <Label>Password</Label>
-                <Input value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
-              </div>
+              {!editingId && (
+                <div>
+                  <Label>Password</Label>
+                  <Input value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
+                </div>
+              )}
               <div>
                 <Label>Phone</Label>
                 <Input value={draft.phone} onChange={(e) => setDraft({ ...draft, phone: e.target.value })} />
@@ -152,26 +227,28 @@ export default function EmployeesPage() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="col-span-2">
-                <Label>Assign to sites</Label>
-                <div className="grid grid-cols-2 gap-2 mt-2">
-                  {sites.map((s) => (
-                    <label key={s._id} className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={draft.siteIds.includes(s._id)}
-                        onChange={() => toggleSite(s._id)}
-                      />
-                      {s.name}
-                    </label>
-                  ))}
+              {!editingId && (
+                <div className="sm:col-span-2">
+                  <Label>Assign to sites</Label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                    {sites.map((s) => (
+                      <label key={s._id} className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={draft.siteIds.includes(s._id)}
+                          onChange={() => toggleSite(s._id)}
+                        />
+                        {s.name}
+                      </label>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button onClick={create} disabled={loading || !draft.fullName || !draft.email}>
-                {loading ? "Saving…" : "Create"}
+              <Button onClick={save} disabled={loading || !draft.fullName || (!editingId && !draft.email)}>
+                {loading ? "Saving…" : editingId ? "Save changes" : "Create"}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -180,7 +257,8 @@ export default function EmployeesPage() {
 
       <Card>
         <CardContent className="p-0">
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full whitespace-nowrap text-sm">
             <thead>
               <tr className="border-b text-left text-muted-foreground">
                 <th className="p-3">Name</th>
@@ -199,19 +277,31 @@ export default function EmployeesPage() {
                   <td className="p-3">{e.role}</td>
                   <td className="p-3 text-muted-foreground">{e.employeeCode || "—"}</td>
                   <td className="p-3">
-                    <Badge variant={e.isActive ? "success" : "secondary"}>
-                      {e.isActive ? "active" : "inactive"}
-                    </Badge>
+                    <button
+                      type="button"
+                      onClick={() => toggleActive(e)}
+                      title="Click to toggle active/inactive"
+                    >
+                      <Badge variant={e.isActive ? "success" : "secondary"} className="cursor-pointer">
+                        {e.isActive ? "active" : "inactive"}
+                      </Badge>
+                    </button>
                   </td>
                   <td className="p-3 text-right">
-                    <Button variant="ghost" size="icon" onClick={() => deactivate(e.id)}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    <div className="flex justify-end gap-1">
+                      <Button variant="ghost" size="icon" onClick={() => openEdit(e)} aria-label="Edit employee">
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => remove(e)} aria-label="Delete employee">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
           {employees.length === 0 && (
             <p className="p-6 text-center text-muted-foreground">No employees yet.</p>
           )}
