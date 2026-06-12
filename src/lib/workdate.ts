@@ -28,6 +28,36 @@ export function zonedDateTimeToUtc(
   return new Date(anchor.getTime() - offsetMin * 60_000);
 }
 
+/** All work-date strings from `from` to `to` inclusive (YYYY-MM-DD). */
+export function enumerateWorkDates(from: string, to: string): string[] {
+  const out: string[] = [];
+  const start = new Date(`${from}T00:00:00Z`).getTime();
+  const end = new Date(`${to}T00:00:00Z`).getTime();
+  for (let t = start; t <= end; t += 86_400_000) {
+    out.push(new Date(t).toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+/** True if the given work-date (YYYY-MM-DD) falls on a Sunday. */
+export function isSunday(workDate: string): boolean {
+  return new Date(`${workDate}T00:00:00Z`).getUTCDay() === 0;
+}
+
+/**
+ * True if `instant` falls within [startHHmm, endHHmm) in the given timezone.
+ * Both bounds are "HH:mm" 24-hour strings (e.g. "13:00", "14:00").
+ */
+export function isWithinLocalTimeWindow(
+  instant: Date,
+  timezone: string,
+  startHHmm: string,
+  endHHmm: string
+): boolean {
+  const cur = formatInTimeZone(instant, timezone, "HH:mm");
+  return cur >= startHHmm && cur < endHHmm;
+}
+
 function getTimezoneOffsetMinutes(tz: string, instant: Date): number {
   // Compare parts in tz vs UTC at the same instant.
   const zoned = toZonedTime(instant, tz);

@@ -64,7 +64,7 @@ export default function EmployeesPage() {
     setOpen(true);
   }
 
-  function openEdit(e: any) {
+  async function openEdit(e: any) {
     setEditingId(e.id);
     setDraft({
       fullName: e.fullName || "",
@@ -78,42 +78,77 @@ export default function EmployeesPage() {
       siteIds: [],
     });
     setOpen(true);
+    // Pre-fill the site selector with the employee's current assignment so the
+    // admin can see and change where they're posted.
+    try {
+      const r = await fetch(`/api/assignments?employeeId=${e.id}`);
+      const j = await r.json();
+      if (j.ok) {
+        const siteIds = (j.data.assignments || []).map((a: any) => String(a.siteId));
+        setDraft((d: any) => ({ ...d, siteIds }));
+      }
+    } catch {
+      /* ignore — selector just starts empty */
+    }
   }
 
   async function save() {
     setLoading(true);
-    let res: Response;
-    if (editingId) {
-      // PATCH supports profile fields only (not email/password/site assignment).
-      res = await fetch(`/api/admin/employees/${editingId}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          fullName: draft.fullName,
-          phone: draft.phone,
-          employeeCode: draft.employeeCode,
-          department: draft.department,
-          designation: draft.designation,
-          role: draft.role,
-        }),
-      });
-    } else {
-      res = await fetch("/api/admin/employees", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(draft),
-      });
-    }
-    const json = await res.json();
-    setLoading(false);
-    if (json.ok) {
-      toast({ title: editingId ? "Employee updated" : "Employee created" });
+    try {
+      if (editingId) {
+        // 1) Update the profile fields (PATCH doesn't touch email/password/sites).
+        const res = await fetch(`/api/admin/employees/${editingId}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            fullName: draft.fullName,
+            phone: draft.phone,
+            employeeCode: draft.employeeCode,
+            department: draft.department,
+            designation: draft.designation,
+            role: draft.role,
+          }),
+        });
+        const json = await res.json();
+        if (!json.ok) {
+          toast({ title: "Failed", description: json.error, variant: "destructive" });
+          return;
+        }
+        // 2) Reassign work site(s). This replaces the current assignment.
+        const ares = await fetch("/api/assignments", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ employeeId: editingId, siteIds: draft.siteIds }),
+        });
+        const ajson = await ares.json();
+        if (!ajson.ok) {
+          toast({
+            title: "Profile saved, but site update failed",
+            description: ajson.error,
+            variant: "destructive",
+          });
+        } else {
+          toast({ title: "Employee updated" });
+        }
+      } else {
+        const res = await fetch("/api/admin/employees", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(draft),
+        });
+        const json = await res.json();
+        if (!json.ok) {
+          toast({ title: "Failed", description: json.error, variant: "destructive" });
+          return;
+        }
+        toast({ title: "Employee created" });
+      }
       setOpen(false);
       setEditingId(null);
       setDraft(emptyDraft);
       load();
-    } else {
-      toast({ title: "Failed", description: json.error, variant: "destructive" });
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -222,28 +257,34 @@ export default function EmployeesPage() {
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="employee">Employee</SelectItem>
-                    <SelectItem value="manager">Manager</SelectItem>
                     <SelectItem value="admin">Admin</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-              {!editingId && (
-                <div className="sm:col-span-2">
-                  <Label>Assign to sites</Label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
-                    {sites.map((s) => (
-                      <label key={s._id} className="flex items-center gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={draft.siteIds.includes(s._id)}
-                          onChange={() => toggleSite(s._id)}
-                        />
-                        {s.name}
-                      </label>
-                    ))}
-                  </div>
+              <div className="sm:col-span-2">
+                <Label>{editingId ? "Work site assignment" : "Assign to sites"}</Label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                  {sites.map((s) => (
+                    <label key={s._id} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={draft.siteIds.includes(s._id)}
+                        onChange={() => toggleSite(s._id)}
+                      />
+                      {s.name}
+                    </label>
+                  ))}
+                  {sites.length === 0 && (
+                    <p className="text-sm text-muted-foreground">No sites yet — create one first.</p>
+                  )}
                 </div>
-              )}
+                {editingId && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Changing this reassigns the employee&apos;s work site. The first
+                    selected site is their primary site.
+                  </p>
+                )}
+              </div>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>

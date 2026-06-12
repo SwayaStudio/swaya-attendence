@@ -16,7 +16,8 @@ import {
   WorkSite,
 } from "@/models";
 import { haversineDistanceMeters, isInsideGeofence } from "./geo";
-import { todayWorkDate } from "./workdate";
+import { todayWorkDate, isWithinLocalTimeWindow } from "./workdate";
+import { getCompanyTimezone } from "./company";
 import { flagPings, type PingLike } from "./attendance";
 import { env } from "./env";
 
@@ -89,6 +90,11 @@ export async function findSiteForCheckIn(opts: {
 }
 
 export async function processCheckIn(input: CheckInInput): Promise<CheckInResult> {
+  await connectDB();
+  // Enforce scheduled shift hours (when the employee has a schedule for today).
+  const gate = await scheduleGate(input.employeeId, todayWorkDate(input.timezone));
+  if (!gate.ok) return { ok: false, reason: gate.reason };
+
   const found = await findSiteForCheckIn(input);
   if (!found) {
     return { ok: false, reason: "no_assignment" };
@@ -247,6 +253,10 @@ export async function processCheckOut(opts: {
   timezone: string;
 }) {
   await connectDB();
+  // Enforce scheduled shift hours (when the employee has a schedule for today).
+  const gate = await scheduleGate(opts.employeeId, todayWorkDate(opts.timezone));
+  if (!gate.ok) return { ok: false as const, reason: gate.reason };
+
   const session = await AttendanceSession.findOne({
     employeeId: new Types.ObjectId(opts.employeeId),
     status: { $in: ["active", "flagged"] },
@@ -277,11 +287,17 @@ async function finalizeSession(opts: {
   accuracyMeters?: number;
   checkOutAt: Date;
   status: "completed" | "auto_closed" | "flagged";
-  autoCheckout?: boolean;
+  reason?: string;
 }) {
   const { session } = opts;
 
-  session.checkOutAt = opts.checkOutAt;
+  // Never let a back-dated check-out land before check-in (would yield negative /
+  // zeroed durations and corrupt the day totals).
+  const checkInMs = new Date(session.checkInAt).getTime();
+  const checkOutAt =
+    opts.checkOutAt.getTime() < checkInMs ? new Date(checkInMs) : opts.checkOutAt;
+
+  session.checkOutAt = checkOutAt;
   session.checkOutLocation = { type: "Point", coordinates: [opts.lng, opts.lat] };
   session.checkOutAccuracyMeters = opts.accuracyMeters;
   session.status = opts.status;
@@ -294,46 +310,31 @@ async function finalizeSession(opts: {
   );
   await session.save();
 
-  // Replay pings to summarise inside/outside time
-  const pings = await LocationPing.find({ sessionId: session._id })
-    .sort({ capturedAt: 1 })
-    .lean();
-  const { totalInside, totalOutside, outsideVisitCount } = summarizePings(
-    pings,
-    session.siteId.toString()
-  );
-
-  const day = await AttendanceDay.findByIdAndUpdate(
-    session.attendanceDayId,
-    {
-      $set: {
-        lastCheckOutAt: session.checkOutAt,
-        totalWorkSeconds: Math.max(
-          0,
-          Math.floor((session.checkOutAt.getTime() - session.checkInAt.getTime()) / 1000)
-        ),
-        totalInsideSeconds: totalInside,
-        totalOutsideSeconds: totalOutside,
-        outsideVisitCount,
-      },
-    },
-    { new: true }
-  );
-
-  // Close any open outside logs as of the check-out time
+  // Close any open outside logs as of the check-out time.
   await OutsideSiteLog.updateMany(
     { sessionId: session._id, returnedAt: null },
     { $set: { returnedAt: session.checkOutAt, status: "closed" } }
   );
 
+  // Roll up the WHOLE day across all sessions (cumulative work/inside/outside,
+  // including the away-gaps between sessions) — never just this one session.
+  const totals = await recomputeDayTotals(session.attendanceDayId);
+
+  const day = await AttendanceDay.findById(session.attendanceDayId);
   if (day) {
+    day.lastCheckOutAt = session.checkOutAt;
+    day.totalWorkSeconds = totals.totalWorkSeconds;
+    day.totalInsideSeconds = totals.totalInsideSeconds;
+    day.totalOutsideSeconds = totals.totalOutsideSeconds;
+    day.outsideVisitCount = totals.outsideVisitCount;
+
     const reasons = new Set(day.flagReasons || []);
-    if (totalOutside > 30 * 60) {
+    if (totals.totalOutsideSeconds > 30 * 60) {
       day.isFlagged = true;
       reasons.add("excessive_outside_time");
     }
-    if (opts.autoCheckout) {
-      reasons.add("auto_checkout_left_site");
+    if (opts.reason) {
+      reasons.add(opts.reason);
     }
     day.flagReasons = Array.from(reasons);
     if (day.status === "pending") day.status = "present";
@@ -345,20 +346,175 @@ async function finalizeSession(opts: {
   return { ok: true as const, session, day };
 }
 
+/**
+ * Cumulative totals for a whole attendance day, summed across ALL of its sessions:
+ *   work    = Σ (checkOut − checkIn)            [for the open session, up to `nowMs`]
+ *   inside  = Σ in-session time inside the geofence
+ *   outside = Σ in-session time outside  +  Σ away-gaps (prev checkOut → next checkIn)
+ * The "away gap" is the time the employee was fully checked out between sessions.
+ */
+async function recomputeDayTotals(attendanceDayId: any, nowMs?: number) {
+  // One query for the day's sessions and ONE for all of its pings (grouped in
+  // memory) — avoids an N+1 of one ping query per session on this hot path.
+  const [sessions, allPings] = await Promise.all([
+    AttendanceSession.find({ attendanceDayId }).sort({ checkInAt: 1 }).lean(),
+    LocationPing.find({ attendanceDayId })
+      .select("sessionId capturedAt isInsideGeofence")
+      .sort({ capturedAt: 1 })
+      .lean(),
+  ]);
+
+  const pingsBySession = new Map<string, any[]>();
+  for (const p of allPings) {
+    const key = String(p.sessionId);
+    const arr = pingsBySession.get(key);
+    if (arr) arr.push(p);
+    else pingsBySession.set(key, [p]);
+  }
+
+  let totalWorkSeconds = 0;
+  let totalInsideSeconds = 0;
+  let totalOutsideSeconds = 0;
+  let outsideVisitCount = 0;
+  let prevCheckOutMs: number | null = null;
+
+  for (const s of sessions) {
+    const startMs = new Date(s.checkInAt).getTime();
+    const endMs = s.checkOutAt ? new Date(s.checkOutAt).getTime() : (nowMs ?? Date.now());
+    totalWorkSeconds += Math.max(0, Math.floor((endMs - startMs) / 1000));
+
+    const summ = summarizePings(pingsBySession.get(String(s._id)) || [], String(s.siteId), endMs);
+    totalInsideSeconds += summ.totalInside;
+    totalOutsideSeconds += summ.totalOutside;
+    outsideVisitCount += summ.outsideVisitCount;
+
+    // Time spent away between the previous check-out and this check-in counts as outside.
+    if (prevCheckOutMs != null) {
+      totalOutsideSeconds += Math.max(0, Math.floor((startMs - prevCheckOutMs) / 1000));
+      outsideVisitCount += 1;
+    }
+    prevCheckOutMs = endMs;
+  }
+
+  return { totalWorkSeconds, totalInsideSeconds, totalOutsideSeconds, outsideVisitCount };
+}
+
+/**
+ * Live cumulative day totals (all sessions + away gaps) while a session is open,
+ * computed up to "now" so the employee dashboard can show them ticking. Returns
+ * null when there is no active session.
+ */
+export async function liveTotalsForActiveSession(employeeId: string) {
+  const session = await AttendanceSession.findOne({
+    employeeId: new Types.ObjectId(employeeId),
+    status: { $in: ["active", "flagged"] },
+  }).sort({ checkInAt: -1 });
+  if (!session) return null;
+  return recomputeDayTotals(session.attendanceDayId, Date.now());
+}
+
+/** The scheduled shift end (UTC) for a session's day, or null if not scheduled. */
+async function getShiftEnd(session: any): Promise<Date | null> {
+  const day = await AttendanceDay.findById(session.attendanceDayId).lean();
+  if (!day) return null;
+  const schedule = await EmployeeSchedule.findOne({
+    employeeId: session.employeeId,
+    workDate: day.workDate,
+  }).lean();
+  if (!schedule || !schedule.isWorkingDay || !schedule.expectedEndAt) return null;
+  return new Date(schedule.expectedEndAt);
+}
+
+/** Close one session at its scheduled shift end, storing cumulative day totals. */
+async function closeSessionAtShiftEnd(session: any, shiftEnd: Date) {
+  const lastPing = await LocationPing.findOne({ sessionId: session._id })
+    .sort({ capturedAt: -1 })
+    .lean();
+  const coords = (lastPing?.location?.coordinates ?? session.checkInLocation?.coordinates ?? [
+    0, 0,
+  ]) as [number, number];
+  await finalizeSession({
+    session,
+    lat: coords[1],
+    lng: coords[0],
+    accuracyMeters: lastPing?.accuracyMeters,
+    checkOutAt: shiftEnd,
+    status: "auto_closed",
+    reason: "auto_checkout_shift_ended",
+  });
+}
+
+/**
+ * Sweep all still-open sessions and auto check-out any whose scheduled shift end
+ * has already passed. Used by the cron backstop (covers the case where the app
+ * was killed and stopped sending pings). Returns how many were closed.
+ */
+export async function autoCloseEndedShifts(): Promise<number> {
+  await connectDB();
+  const sessions = await AttendanceSession.find({
+    status: { $in: ["active", "flagged"] },
+  }).sort({ checkInAt: 1 });
+  let closed = 0;
+  for (const session of sessions) {
+    const shiftEnd = await getShiftEnd(session);
+    if (shiftEnd && Date.now() > shiftEnd.getTime()) {
+      await closeSessionAtShiftEnd(session, shiftEnd);
+      closed++;
+    }
+  }
+  return closed;
+}
+
+/**
+ * Enforce that check-in / check-out happen within the scheduled shift window.
+ * Window = [shift start − grace, shift end]. If no schedule exists for the day,
+ * there is no gate. A scheduled non-working day blocks check-in entirely.
+ */
+async function scheduleGate(
+  employeeId: string,
+  workDate: string
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const schedule = await EmployeeSchedule.findOne({
+    employeeId: new Types.ObjectId(employeeId),
+    workDate,
+  }).lean();
+  if (!schedule) return { ok: true };
+  if (!schedule.isWorkingDay) {
+    return { ok: false, reason: "Today is a scheduled day off — no check-in required." };
+  }
+  if (schedule.expectedStartAt && schedule.expectedEndAt) {
+    const shift = await ShiftTemplate.findById(schedule.shiftTemplateId).lean();
+    const graceMs = (shift?.graceMinutes ?? 0) * 60_000;
+    const start = new Date(schedule.expectedStartAt).getTime() - graceMs;
+    const end = new Date(schedule.expectedEndAt).getTime();
+    const now = Date.now();
+    if (now < start || now > end) {
+      return { ok: false, reason: "You can only check in or out during your scheduled shift hours." };
+    }
+  }
+  return { ok: true };
+}
+
 function summarizePings(
   pings: any[],
-  _siteId: string
+  _siteId: string,
+  endTimeMs?: number
 ): { totalInside: number; totalOutside: number; outsideVisitCount: number } {
   let totalInside = 0;
   let totalOutside = 0;
   let outsideVisitCount = 0;
   let inOutsideRun = false;
 
+  const cap = endTimeMs ?? Date.now();
   for (let i = 0; i < pings.length; i++) {
     const p = pings[i];
     const next = pings[i + 1];
     const inside = !!p.isInsideGeofence;
-    const tEnd = next ? new Date(next.capturedAt).getTime() : Date.now();
+    // Clamp EVERY interval's end to the session end (checkout / "now"), so pings
+    // captured after the effective checkout don't add time and intervals can't be
+    // double-counted against the away-gap.
+    const rawEnd = next ? new Date(next.capturedAt).getTime() : cap;
+    const tEnd = Math.min(rawEnd, cap);
     const dt = Math.max(0, Math.floor((tEnd - new Date(p.capturedAt).getTime()) / 1000));
     if (inside) {
       totalInside += dt;
@@ -406,6 +562,23 @@ export async function processPings(opts: {
   if (!site) return { ok: false as const, reason: "no_site" };
   const [siteLng, siteLat] = site.location.coordinates;
 
+  // Company timezone (cached) — used to evaluate the lunch-break window.
+  const timezone = await getCompanyTimezone(opts.companyId);
+
+  // End-of-shift auto check-out: if the scheduled shift end has already passed,
+  // close the session at the shift-end time (storing totals) instead of tracking
+  // further. The employee never has to press check-out at the end of the day.
+  const shiftEnd = await getShiftEnd(session);
+  if (shiftEnd && Date.now() > shiftEnd.getTime()) {
+    await closeSessionAtShiftEnd(session, shiftEnd);
+    return {
+      ok: true as const,
+      received: 0,
+      autoCheckedOut: true,
+      autoCheckoutAt: shiftEnd.toISOString(),
+    };
+  }
+
   // Determine previous "inside" state from last ping
   const lastPing = await LocationPing.findOne({ sessionId: session._id })
     .sort({ capturedAt: -1 })
@@ -429,6 +602,12 @@ export async function processPings(opts: {
       site.radiusMeters,
       p.accuracyMeters ?? 0
     );
+    // Ignore unreliable readings: a ping whose reported GPS accuracy is worse than
+    // the configured limit should NOT move the geofence state — otherwise junk
+    // readings inflate "outside" time and cause false exits. Carry the last state.
+    const reliable =
+      p.accuracyMeters == null || p.accuracyMeters <= env.MAX_PING_ACCURACY_METERS;
+    const effectiveInside = reliable ? inside : currentlyInside;
     const capturedAt = p.capturedAt ? new Date(p.capturedAt) : new Date();
     await LocationPing.create({
       attendanceDayId: session.attendanceDayId,
@@ -440,7 +619,7 @@ export async function processPings(opts: {
       location: { type: "Point", coordinates: [p.lng, p.lat] },
       accuracyMeters: p.accuracyMeters,
       distanceFromSiteMeters: distance,
-      isInsideGeofence: inside,
+      isInsideGeofence: effectiveInside,
       isMockLocation: p.isMockLocation ?? false,
       isGpsEnabled: true,
       batteryPercentage: p.batteryPercentage,
@@ -448,20 +627,20 @@ export async function processPings(opts: {
       appState: (p.appState as any) ?? "unknown",
     });
     // Geofence event on transition
-    if (inside !== currentlyInside) {
+    if (effectiveInside !== currentlyInside) {
       await GeofenceEvent.create({
         attendanceDayId: session.attendanceDayId,
         sessionId: session._id,
         companyId,
         employeeId,
         siteId: session.siteId,
-        eventType: inside ? "entered_site" : "exited_site",
+        eventType: effectiveInside ? "entered_site" : "exited_site",
         eventAt: capturedAt,
         location: { type: "Point", coordinates: [p.lng, p.lat] },
         accuracyMeters: p.accuracyMeters,
         distanceFromSiteMeters: distance,
       });
-      if (inside) {
+      if (effectiveInside) {
         // close any open outside log
         const openLog = await OutsideSiteLog.findOne({
           sessionId: session._id,
@@ -492,40 +671,7 @@ export async function processPings(opts: {
           status: "open",
         });
       }
-      currentlyInside = inside;
-    }
-
-    // Automatic check-out: the employee has moved beyond the geofence radius
-    // plus a buffer (which absorbs GPS jitter near the boundary). Close the
-    // session as of the moment they crossed the site boundary.
-    if (
-      env.AUTO_CHECKOUT_ENABLED &&
-      !inside &&
-      distance > site.radiusMeters + env.AUTO_CHECKOUT_BUFFER_METERS
-    ) {
-      // The boundary crossing is the open outside log's exitedAt; fall back to
-      // this ping if no log exists (e.g. first ping already beyond the buffer).
-      const openLog = await OutsideSiteLog.findOne({
-        sessionId: session._id,
-        returnedAt: null,
-      })
-        .sort({ exitedAt: -1 })
-        .lean();
-      const leftAt = openLog ? new Date(openLog.exitedAt) : capturedAt;
-
-      await finalizeSession({
-        session,
-        lat: p.lat,
-        lng: p.lng,
-        accuracyMeters: p.accuracyMeters,
-        checkOutAt: leftAt,
-        status: "auto_closed",
-        autoCheckout: true,
-      });
-
-      autoCheckedOut = true;
-      autoCheckoutAt = leftAt;
-      break;
+      currentlyInside = effectiveInside;
     }
   }
 
@@ -552,6 +698,68 @@ export async function processPings(opts: {
       day.flagReasons = Array.from(reasons);
       await day.save();
     }
+  }
+
+  // Auto check-out on SUSTAINED absence: the most recent N pings are ALL beyond
+  // the geofence radius + buffer. Requiring several consecutive readings means a
+  // single GPS-drift spike (employee actually sitting still) won't end the shift.
+  // Suppressed during the lunch window (company timezone).
+  if (env.AUTO_CHECKOUT_ENABLED && !autoCheckedOut) {
+    const need = Math.max(1, env.AUTO_CHECKOUT_CONSECUTIVE_PINGS);
+    const threshold = site.radiusMeters + env.AUTO_CHECKOUT_BUFFER_METERS;
+    const latest = allPings[allPings.length - 1];
+    const tail = allPings.slice(-need);
+    // Each of the last N pings must be a RELIABLE reading that is beyond the
+    // buffer. An inaccurate reading breaks the streak so junk can't check anyone out.
+    const reliableAway = (pp: any) =>
+      (pp.accuracyMeters == null || pp.accuracyMeters <= env.MAX_PING_ACCURACY_METERS) &&
+      (pp.distanceFromSiteMeters ?? 0) > threshold;
+    const sustainedAway = tail.length >= need && tail.every(reliableAway);
+    if (latest && sustainedAway) {
+      // Back-date the check-out to when they crossed the site boundary (the open
+      // outside-site log), falling back to the latest ping.
+      const openLog = await OutsideSiteLog.findOne({
+        sessionId: session._id,
+        returnedAt: null,
+      })
+        .sort({ exitedAt: -1 })
+        .lean();
+      const leftAt = openLog ? new Date(openLog.exitedAt) : new Date(latest.capturedAt);
+      // Suppress during lunch — check BOTH the trigger time and the effective
+      // (back-dated) check-out time, so a lunch departure is never auto-closed.
+      const lunchPause =
+        env.AUTO_CHECKOUT_LUNCH_BREAK_ENABLED &&
+        (isWithinLocalTimeWindow(new Date(latest.capturedAt), timezone, env.AUTO_CHECKOUT_LUNCH_START, env.AUTO_CHECKOUT_LUNCH_END) ||
+          isWithinLocalTimeWindow(leftAt, timezone, env.AUTO_CHECKOUT_LUNCH_START, env.AUTO_CHECKOUT_LUNCH_END));
+      if (!lunchPause) {
+        await finalizeSession({
+          session,
+          lat: latest.location.coordinates[1],
+          lng: latest.location.coordinates[0],
+          accuracyMeters: latest.accuracyMeters,
+          checkOutAt: leftAt,
+          status: "auto_closed",
+          reason: "auto_checkout_left_site",
+        });
+        autoCheckedOut = true;
+        autoCheckoutAt = leftAt;
+      }
+    }
+  }
+
+  // Keep the day's running (cumulative) work/inside/outside totals fresh so live
+  // displays and in-progress reports reflect every session plus the away-gaps
+  // (skip if we just auto-closed the session above).
+  if (!autoCheckedOut) {
+    const totals = await recomputeDayTotals(session.attendanceDayId, Date.now());
+    await AttendanceDay.findByIdAndUpdate(session.attendanceDayId, {
+      $set: {
+        totalWorkSeconds: totals.totalWorkSeconds,
+        totalInsideSeconds: totals.totalInsideSeconds,
+        totalOutsideSeconds: totals.totalOutsideSeconds,
+        outsideVisitCount: totals.outsideVisitCount,
+      },
+    });
   }
 
   return {

@@ -54,5 +54,7 @@ const OutsideSiteLogSchema = new Schema(
 
 OutsideSiteLogSchema.index({ employeeId: 1, exitedAt: -1 });
 OutsideSiteLogSchema.index({ attendanceDayId: 1, exitedAt: 1 });
+// Covers the hot open-log lookups/updates by session during ping processing.
+OutsideSiteLogSchema.index({ sessionId: 1, returnedAt: 1, exitedAt: -1 });
 
 export const OutsideSiteLog = (models.OutsideSiteLog as any) || model("OutsideSiteLog", OutsideSiteLogSchema);

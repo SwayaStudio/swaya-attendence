@@ -41,13 +41,24 @@ function ClickToSetCenter({ onSet }: { onSet: (lat: number, lng: number) => void
 function RecenterOn({ lat, lng, zoom }: { lat: number; lng: number; zoom: number }) {
   const map = useMap();
   useEffect(() => {
-    map.setView([lat, lng], zoom);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      map.setView([lat, lng], zoom);
+    }
   }, [lat, lng, zoom, map]);
   return null;
 }
 
+/** Leaflet throws on NaN/Infinity — coerce any invalid number to a safe default. */
+function num(value: number, fallback: number): number {
+  return Number.isFinite(value) ? value : fallback;
+}
+
 export function GeofenceMap({ value, onChange, height = 400, zoom = 14 }: Props) {
-  const center: [number, number] = [value.lat, value.lng];
+  const safeLat = num(value.lat, 0);
+  const safeLng = num(value.lng, 0);
+  // Radius 0 renders nothing but never crashes; clamp out NaN/negatives.
+  const safeRadius = Math.max(0, num(value.radiusMeters, 0));
+  const center: [number, number] = [safeLat, safeLng];
   const [editable] = useState(true);
 
   return (
@@ -57,7 +68,7 @@ export function GeofenceMap({ value, onChange, height = 400, zoom = 14 }: Props)
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        <RecenterOn lat={value.lat} lng={value.lng} zoom={zoom} />
+        <RecenterOn lat={safeLat} lng={safeLng} zoom={zoom} />
         <Marker
           position={center}
           draggable={editable}
@@ -71,7 +82,7 @@ export function GeofenceMap({ value, onChange, height = 400, zoom = 14 }: Props)
         />
         <Circle
           center={center}
-          radius={value.radiusMeters}
+          radius={safeRadius}
           pathOptions={{ color: "#3b82f6", fillColor: "#3b82f6", fillOpacity: 0.15 }}
         />
         <ClickToSetCenter
@@ -83,15 +94,18 @@ export function GeofenceMap({ value, onChange, height = 400, zoom = 14 }: Props)
 }
 
 export function MapReadOnly({ lat, lng, radiusMeters, height = 300 }: { lat: number; lng: number; radiusMeters: number; height?: number | string }) {
+  const safeLat = num(lat, 0);
+  const safeLng = num(lng, 0);
+  const safeRadius = Math.max(0, num(radiusMeters, 0));
   return (
     <div style={{ height, width: "100%" }} className="rounded-md overflow-hidden border">
-      <MapContainer center={[lat, lng]} zoom={15} scrollWheelZoom={false}>
+      <MapContainer center={[safeLat, safeLng]} zoom={15} scrollWheelZoom={false}>
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        <Marker position={[lat, lng]} />
-        <Circle center={[lat, lng]} radius={radiusMeters} pathOptions={{ color: "#3b82f6", fillColor: "#3b82f6", fillOpacity: 0.15 }} />
+        <Marker position={[safeLat, safeLng]} />
+        <Circle center={[safeLat, safeLng]} radius={safeRadius} pathOptions={{ color: "#3b82f6", fillColor: "#3b82f6", fillOpacity: 0.15 }} />
       </MapContainer>
     </div>
   );

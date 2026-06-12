@@ -27,6 +27,7 @@ import {
   LogOut,
   Settings,
   Building,
+  Plane,
   Menu,
 } from "lucide-react";
 
@@ -41,6 +42,7 @@ import {
 const empNav = [
   { href: "/employee", label: "Today's check-in", icon: Clock },
   { href: "/employee/history", label: "History", icon: Calendar },
+  { href: "/employee/leave", label: "Leave", icon: Plane },
   { href: "/employee/regularization", label: "Regularization", icon: ClipboardList },
   { href: "/employee/sites", label: "My sites", icon: MapPin },
 ];
@@ -58,6 +60,7 @@ const adminNav = [
   { href: "/admin/shifts", label: "Shifts", icon: Clock },
   { href: "/admin/schedules", label: "Schedules", icon: Calendar },
   { href: "/admin/holidays", label: "Holidays", icon: FileText },
+  { href: "/admin/approvals", label: "Approvals", icon: ClipboardList },
   { href: "/admin/reports", label: "Reports", icon: FileText },
   { href: "/admin/audit", label: "Audit", icon: Settings },
 ];

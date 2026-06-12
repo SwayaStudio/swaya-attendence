@@ -31,6 +31,15 @@ export function useBackgroundTracker(opts: {
   const watchIdRef = useRef<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Keep the latest callbacks in refs so the effect below does NOT depend on
+  // them — otherwise an inline `onError={() => {}}` (new each render) would tear
+  // down and rebuild the ping timers on every parent re-render (the live work
+  // timer re-renders once a second), so pings would never actually fire.
+  const onErrorRef = useRef(onError);
+  const onAutoCheckoutRef = useRef(onAutoCheckout);
+  onErrorRef.current = onError;
+  onAutoCheckoutRef.current = onAutoCheckout;
+
   useEffect(() => {
     if (!active || typeof window === "undefined") return;
 
@@ -67,7 +76,7 @@ export function useBackgroundTracker(opts: {
         setLastPing({ lat: coords.lat, lng: coords.lng, t: Date.now() });
         // Server may have auto-checked-out the employee for leaving the site.
         const json = await res.json().catch(() => null);
-        if (json?.data?.autoCheckedOut) onAutoCheckout?.();
+        if (json?.data?.autoCheckedOut) onAutoCheckoutRef.current?.();
       } catch (e) {
         // queue via service worker
         try {
@@ -75,7 +84,7 @@ export function useBackgroundTracker(opts: {
           reg.active?.postMessage({ type: "enqueue-ping", ping: payload });
           setQueueSize((q) => q + 1);
         } catch (err) {
-          onError?.(err as Error);
+          onErrorRef.current?.(err as Error);
         }
       }
     }
@@ -89,7 +98,7 @@ export function useBackgroundTracker(opts: {
             accuracy: pos.coords.accuracy,
           });
         },
-        (err) => onError?.(err as unknown as Error),
+        (err) => onErrorRef.current?.(err as unknown as Error),
         { enableHighAccuracy: true, timeout: 8000, maximumAge: 1000 }
       );
     }
@@ -105,7 +114,7 @@ export function useBackgroundTracker(opts: {
       if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current);
       setRunning(false);
     };
-  }, [active, intervalMs, deviceId, onError, onAutoCheckout]);
+  }, [active, intervalMs, deviceId]);
 
   return { lastPing, queueSize, running };
 }

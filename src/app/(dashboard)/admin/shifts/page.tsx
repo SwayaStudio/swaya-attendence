@@ -126,7 +126,7 @@ export default function ShiftsPage() {
             </div>
             <div>
               <Label>Grace (min)</Label>
-              <Input type="number" value={draft.graceMinutes} onChange={(e) => setDraft({ ...draft, graceMinutes: parseInt(e.target.value) })} />
+              <Input type="number" min={0} value={draft.graceMinutes} onChange={(e) => setDraft({ ...draft, graceMinutes: Math.max(0, parseInt(e.target.value) || 0) })} />
             </div>
             <Button onClick={add} disabled={!draft.name}><Plus className="h-4 w-4 mr-2" />Add</Button>
           </div>
@@ -197,11 +197,11 @@ export default function ShiftsPage() {
             </div>
             <div>
               <Label>Grace (min)</Label>
-              <Input type="number" value={editDraft.graceMinutes} onChange={(e) => setEditDraft({ ...editDraft, graceMinutes: parseInt(e.target.value) })} />
+              <Input type="number" min={0} value={editDraft.graceMinutes} onChange={(e) => setEditDraft({ ...editDraft, graceMinutes: Math.max(0, parseInt(e.target.value) || 0) })} />
             </div>
             <div>
               <Label>Min work (min)</Label>
-              <Input type="number" value={editDraft.minimumWorkMinutes} onChange={(e) => setEditDraft({ ...editDraft, minimumWorkMinutes: parseInt(e.target.value) })} />
+              <Input type="number" min={0} value={editDraft.minimumWorkMinutes} onChange={(e) => setEditDraft({ ...editDraft, minimumWorkMinutes: Math.max(0, parseInt(e.target.value) || 0) })} />
             </div>
             <label className="flex items-center gap-2 text-sm sm:col-span-2">
               <input

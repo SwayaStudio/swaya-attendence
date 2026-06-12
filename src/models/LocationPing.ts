@@ -37,8 +37,8 @@ const LocationPingSchema = new Schema(
     location: { type: GeoPointSchema, required: true },
     accuracyMeters: { type: Number },
     distanceFromSiteMeters: { type: Number },
-    isInsideGeofence: { type: Boolean, required: true, index: true },
-    isMockLocation: { type: Boolean, default: false, index: true },
+    isInsideGeofence: { type: Boolean, required: true },
+    isMockLocation: { type: Boolean, default: false },
     isGpsEnabled: { type: Boolean, default: true },
     batteryPercentage: { type: Number, min: 0, max: 100 },
     networkType: {

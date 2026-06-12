@@ -79,6 +79,17 @@ export const env = {
     "AUTO_CHECKOUT_BUFFER_METERS",
     DEFAULTS.AUTO_CHECKOUT_BUFFER_METERS
   ),
+  // Number of CONSECUTIVE pings that must read beyond the radius+buffer before we
+  // auto check-out. Requiring several in a row means a single GPS-drift spike
+  // (employee actually sitting still) won't end the shift.
+  AUTO_CHECKOUT_CONSECUTIVE_PINGS: num("AUTO_CHECKOUT_CONSECUTIVE_PINGS", 3),
+  // Suppress auto check-out during the afternoon lunch window (company timezone),
+  // so leaving the site radius for lunch doesn't end the shift. Times are HH:mm.
+  AUTO_CHECKOUT_LUNCH_BREAK_ENABLED: bool("AUTO_CHECKOUT_LUNCH_BREAK_ENABLED", true),
+  AUTO_CHECKOUT_LUNCH_START: process.env.AUTO_CHECKOUT_LUNCH_START || "13:00",
+  AUTO_CHECKOUT_LUNCH_END: process.env.AUTO_CHECKOUT_LUNCH_END || "14:00",
+  // Shared secret Vercel Cron sends as a Bearer token to the close-shifts job.
+  CRON_SECRET: process.env.CRON_SECRET || "",
   SMTP_HOST: process.env.SMTP_HOST || "",
   SMTP_PORT: num("SMTP_PORT", 587),
   SMTP_USER: process.env.SMTP_USER || "",

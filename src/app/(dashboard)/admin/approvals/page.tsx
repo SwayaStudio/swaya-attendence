@@ -1,5 +1,5 @@
 import { ApprovalsPanel } from "@/components/approvals/ApprovalsPanel";
 
-export default function ManagerApprovalsPage() {
+export default function AdminApprovalsPage() {
   return <ApprovalsPanel />;
 }

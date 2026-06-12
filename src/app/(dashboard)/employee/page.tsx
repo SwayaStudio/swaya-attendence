@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -38,10 +38,47 @@ function getPosition(): Promise<GeolocationPosition> {
   });
 }
 
+/**
+ * A stable-ish device id for this browser. Uses the Web Crypto API (available in
+ * browsers and the Android WebView) and persists it in localStorage. Never
+ * imports the Node `crypto` module, which would fail to bundle on the client.
+ */
+function getDeviceId(): string {
+  if (typeof window === "undefined") return "web";
+  try {
+    const KEY = "geo-attendance-device-id";
+    let id = window.localStorage.getItem(KEY);
+    if (!id) {
+      const rand =
+        typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID().slice(0, 8)
+          : Math.random().toString(36).slice(2, 10);
+      id = "web-" + rand;
+      window.localStorage.setItem(KEY, id);
+    }
+    return id;
+  } catch {
+    return "web-" + Math.random().toString(36).slice(2, 10);
+  }
+}
+
+/** H:MM:SS — used for the live, ticking work timer. */
+function formatHMS(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${h}:${pad(m)}:${pad(sec)}`;
+}
+
 type TodayState = {
   day: any;
   sessions: any[];
   site: any;
+  schedule?: any;
+  shift?: any;
+  leave?: any;
 };
 
 export default function EmployeePage() {
@@ -53,11 +90,20 @@ export default function EmployeePage() {
   const [battery, setBattery] = useState<number | null>(null);
   const [network, setNetwork] = useState<string>("unknown");
   const [tracking, setTracking] = useState(false);
+  const [nowTs, setNowTs] = useState(0);
 
+  const loadSeq = useRef(0);
   const loadToday = useCallback(async () => {
-    const res = await fetch("/api/attendance/today");
-    const json = await res.json();
-    if (json.ok) setToday(json.data);
+    const seq = ++loadSeq.current;
+    try {
+      const res = await fetch("/api/attendance/today");
+      const json = await res.json();
+      // Ignore a response that a newer request has already superseded.
+      if (seq !== loadSeq.current) return;
+      if (json.ok) setToday(json.data);
+    } catch {
+      /* network error — keep last good state, next poll retries */
+    }
   }, []);
 
   useEffect(() => {
@@ -87,7 +133,7 @@ export default function EmployeePage() {
           lng: coords.longitude,
           accuracy: coords.accuracy,
           isMockLocation: false,
-          deviceId: "web-" + (await import("crypto")).randomUUID?.()?.slice(0, 8) || Date.now(),
+          deviceId: getDeviceId(),
         }),
       });
       const json = await res.json();
@@ -154,6 +200,40 @@ export default function EmployeePage() {
   const isCheckedIn = !!today?.sessions?.some(
     (s: any) => s.status === "active" || s.status === "flagged"
   );
+  // A scheduled non-working day (weekly off / company holiday) — no check-in needed.
+  const isDayOff = today?.schedule != null && today.schedule.isWorkingDay === false;
+  // An approved leave covering today — also no check-in needed.
+  const isOnLeave = today?.leave != null;
+  const noCheckInNeeded = isOnLeave || isDayOff;
+
+  // While checked in: tick the work timer every second, and re-fetch the day
+  // every 15s so the (server-computed) outside time stays current.
+  useEffect(() => {
+    if (!isCheckedIn) return;
+    setNowTs(Date.now());
+    const tick = setInterval(() => setNowTs(Date.now()), 1000);
+    const poll = setInterval(() => loadToday(), 15000);
+    return () => {
+      clearInterval(tick);
+      clearInterval(poll);
+    };
+  }, [isCheckedIn, loadToday]);
+
+  const activeSession = today?.sessions?.find(
+    (s: any) => s.status === "active" || s.status === "flagged"
+  );
+  // Sum of already-completed sessions today (so work time is cumulative, not just
+  // the current session).
+  const completedWorkSeconds = (today?.sessions || []).reduce((acc: number, s: any) => {
+    if (!s.checkOutAt) return acc;
+    return acc + Math.max(0, Math.floor((new Date(s.checkOutAt).getTime() - new Date(s.checkInAt).getTime()) / 1000));
+  }, 0);
+  // Work time = completed sessions + the open session ticking live; falls back to
+  // the stored cumulative total when not checked in.
+  const liveWorkSeconds =
+    isCheckedIn && activeSession?.checkInAt && nowTs
+      ? completedWorkSeconds + Math.max(0, Math.floor((nowTs - new Date(activeSession.checkInAt).getTime()) / 1000))
+      : today?.day?.totalWorkSeconds || 0;
 
   return (
     <div className="space-y-6">
@@ -171,7 +251,7 @@ export default function EmployeePage() {
           <CardDescription>{site?.name || "No site assigned"}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {site && (
+          {site && Array.isArray(site.location?.coordinates) && (
             <LiveTrackerMap
               siteLat={site.location.coordinates[1]}
               siteLng={site.location.coordinates[0]}
@@ -182,7 +262,16 @@ export default function EmployeePage() {
             />
           )}
 
-          {!isCheckedIn ? (
+          {noCheckInNeeded && !isCheckedIn ? (
+            <div className="rounded-md border bg-muted p-4 text-center">
+              <p className="font-medium">{isOnLeave ? "On leave" : "Day off"}</p>
+              <p className="text-sm text-muted-foreground">
+                {isOnLeave
+                  ? `You're on approved ${today?.leave?.leaveType || ""} leave today — no check-in required.`
+                  : "Today is a weekly off or company holiday — no check-in required."}
+              </p>
+            </div>
+          ) : !isCheckedIn ? (
             <Button className="w-full gap-2" size="lg" onClick={handleCheckIn} disabled={loading}>
               {loading && <Loader2 className="h-4 w-4 animate-spin" />}
               <CheckCircle2 className="h-5 w-5" />
@@ -211,7 +300,9 @@ export default function EmployeePage() {
               )}
               <div>
                 <Label className="text-muted-foreground">Work time</Label>
-                <p>{formatDuration(today?.day?.totalWorkSeconds || 0)}</p>
+                <p className={isCheckedIn ? "tabular-nums" : undefined}>
+                  {isCheckedIn ? formatHMS(liveWorkSeconds) : formatDuration(liveWorkSeconds)}
+                </p>
               </div>
               <div>
                 <Label className="text-muted-foreground">Outside</Label>

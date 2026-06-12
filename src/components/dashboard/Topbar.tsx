@@ -1,6 +1,7 @@
 "use client";
 
 import { signOut } from "next-auth/react";
+import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -30,7 +31,17 @@ export function Topbar({
       <div className="min-w-0 truncate text-sm text-muted-foreground">
         Logged in as <span className="font-medium text-foreground">{roleLabel}</span>
       </div>
-      <DropdownMenu>
+      <div className="flex items-center gap-1">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => window.location.reload()}
+          aria-label="Refresh"
+          title="Refresh"
+        >
+          <RefreshCw className="h-5 w-5" />
+        </Button>
+        <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" className="max-w-[45vw] gap-2 sm:max-w-none">
             <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm font-bold">
@@ -50,6 +61,7 @@ export function Topbar({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      </div>
     </header>
   );
 }

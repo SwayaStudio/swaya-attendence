@@ -25,6 +25,9 @@ export async function connectDB(): Promise<Mongoose> {
       dbName: env.MONGODB_DB_NAME,
       bufferCommands: false,
       serverSelectionTimeoutMS: 30_000,
+      // Keep the per-instance pool small so many concurrent serverless instances
+      // don't exhaust the Atlas connection limit.
+      maxPoolSize: 10,
     });
   }
   cache.conn = await cache.promise;

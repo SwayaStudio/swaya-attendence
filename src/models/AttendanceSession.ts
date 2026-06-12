@@ -48,6 +48,10 @@ const AttendanceSessionSchema = new Schema(
 );
 
 AttendanceSessionSchema.index({ employeeId: 1, status: 1 });
+// Sort active-session lookups by checkInAt without an in-memory sort.
+AttendanceSessionSchema.index({ employeeId: 1, status: 1, checkInAt: -1 });
+// recomputeDayTotals / today: all sessions of a day in check-in order.
+AttendanceSessionSchema.index({ attendanceDayId: 1, checkInAt: 1 });
 AttendanceSessionSchema.index({ checkInLocation: "2dsphere" });
 
 export const AttendanceSession =

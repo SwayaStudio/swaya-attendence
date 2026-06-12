@@ -72,6 +72,11 @@ export function withApi<TArgs extends unknown[]>(
       if (err && typeof err === "object" && "issues" in err) {
         return fail("Validation failed", 400, { issues: (err as { issues: unknown }).issues });
       }
+      const e = err as { name?: string; code?: number };
+      // Mongoose cast (bad ObjectId etc.) -> 400, not a 500.
+      if (e?.name === "CastError") return fail("Invalid identifier", 400);
+      // Mongo duplicate-key (unique index) -> 409, not a 500.
+      if (e?.code === 11000) return fail("Already exists", 409);
       // eslint-disable-next-line no-console
       console.error("[api] unhandled error:", err);
       const message = err instanceof Error ? err.message : "Internal server error";

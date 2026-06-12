@@ -68,12 +68,9 @@ function LoginFormInner() {
           <Button type="submit" className="w-full" disabled={loading}>
             {loading ? "Signing in…" : "Sign in"}
           </Button>
-          <div className="flex justify-between w-full text-sm">
+          <div className="flex w-full text-sm">
             <Link href="/forgot-password" className="text-muted-foreground hover:text-foreground">
               Forgot password?
-            </Link>
-            <Link href="/signup" className="text-muted-foreground hover:text-foreground">
-              Create company
             </Link>
           </div>
         </CardFooter>

@@ -70,7 +70,7 @@ export const EmployeeCreateSchema = z.object({
   employeeCode: z.string().max(40).optional(),
   department: z.string().max(80).optional(),
   designation: z.string().max(80).optional(),
-  role: z.enum(["admin", "manager", "employee"]).default("employee"),
+  role: z.enum(["admin", "employee"]).default("employee"),
   managerId: z.string().optional().nullable(),
   joiningDate: z.string().optional(),
   siteIds: z.array(z.string()).optional(),
@@ -86,6 +86,23 @@ export const ScheduleBulkSchema = z.object({
       isWorkingDay: z.boolean().default(true),
     })
   ),
+});
+
+export const ScheduleRangeSchema = z.object({
+  fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  // Days that should NOT require a check-in.
+  skipSundays: z.boolean().default(true),
+  skipHolidays: z.boolean().default(true),
+  entries: z
+    .array(
+      z.object({
+        employeeId: z.string(),
+        siteId: z.string(),
+        shiftTemplateId: z.string(),
+      })
+    )
+    .min(1),
 });
 
 export const RegularizationCreateSchema = z.object({

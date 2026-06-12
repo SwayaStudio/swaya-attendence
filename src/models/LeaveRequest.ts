@@ -36,5 +36,7 @@ const LeaveRequestSchema = new Schema(
 );
 
 LeaveRequestSchema.index({ employeeId: 1, startDate: 1, endDate: 1 });
+// Covers the hot "approved leave covering today" lookup on every today-poll.
+LeaveRequestSchema.index({ employeeId: 1, status: 1, startDate: 1, endDate: 1 });
 
 export const LeaveRequest = (models.LeaveRequest as any) || model("LeaveRequest", LeaveRequestSchema);

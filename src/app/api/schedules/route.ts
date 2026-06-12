@@ -4,7 +4,7 @@
 import { NextRequest } from "next/server";
 import { Types } from "mongoose";
 import { connectDB } from "@/lib/db";
-import { EmployeeSchedule, ShiftTemplate, WorkSite, Company } from "@/models";
+import { EmployeeSchedule, ShiftTemplate, WorkSite, Company, User } from "@/models";
 import { requireAuth, requireRole, ok, withApi } from "@/lib/api-helpers";
 import { ScheduleBulkSchema } from "@/lib/validators";
 import { zonedDateTimeToUtc } from "@/lib/workdate";
@@ -27,29 +27,47 @@ export const GET = withApi(async (req: NextRequest) => {
 export const POST = withApi(async (req: NextRequest) => {
   const session = await requireRole(["admin", "super_admin", "manager"]);
   const body = ScheduleBulkSchema.parse(await req.json());
-  const company = await Company.findById(session.user.companyId).lean();
+  const companyId = new Types.ObjectId(session.user.companyId);
+  const company = await Company.findById(companyId).lean();
   const timezone = company?.timezone || "Asia/Kolkata";
+
+  const valid = (v: string) => Types.ObjectId.isValid(v);
+  // Only act on employees / sites / shifts that belong to THIS company — prevents
+  // a caller from reaching across tenants by supplying foreign ids.
+  const [emps, sites, shifts] = await Promise.all([
+    User.find({ companyId, _id: { $in: body.entries.map((e) => e.employeeId).filter(valid) } })
+      .select("_id")
+      .lean(),
+    WorkSite.find({ companyId, _id: { $in: body.entries.map((e) => e.siteId).filter(valid) } })
+      .select("_id")
+      .lean(),
+    ShiftTemplate.find({ companyId, _id: { $in: body.entries.map((e) => e.shiftTemplateId).filter(valid) } }).lean(),
+  ]);
+  const validEmp = new Set(emps.map((u: any) => String(u._id)));
+  const validSite = new Set(sites.map((s: any) => String(s._id)));
+  const shiftMap = new Map<string, any>(shifts.map((s: any) => [String(s._id), s]));
 
   const created: any[] = [];
   for (const e of body.entries) {
-    if (!Types.ObjectId.isValid(e.employeeId) || !Types.ObjectId.isValid(e.siteId) || !Types.ObjectId.isValid(e.shiftTemplateId)) {
+    if (!validEmp.has(e.employeeId) || !validSite.has(e.siteId) || !shiftMap.has(e.shiftTemplateId)) {
       continue;
     }
-    const shift = await ShiftTemplate.findById(e.shiftTemplateId).lean();
-    let expectedStartAt: Date | undefined;
-    let expectedEndAt: Date | undefined;
-    if (shift) {
-      expectedStartAt = zonedDateTimeToUtc(body.workDate, shift.startTime, timezone);
-      expectedEndAt = zonedDateTimeToUtc(body.workDate, shift.endTime, timezone);
+    const shift = shiftMap.get(e.shiftTemplateId);
+    const expectedStartAt = zonedDateTimeToUtc(body.workDate, shift.startTime, timezone);
+    let expectedEndAt = zonedDateTimeToUtc(body.workDate, shift.endTime, timezone);
+    if (expectedEndAt <= expectedStartAt) {
+      // Overnight shift (end time is on the next calendar day).
+      expectedEndAt = new Date(expectedEndAt.getTime() + 86_400_000);
     }
     const result = await EmployeeSchedule.findOneAndUpdate(
       {
+        companyId,
         employeeId: new Types.ObjectId(e.employeeId),
         workDate: body.workDate,
       },
       {
         $set: {
-          companyId: new Types.ObjectId(session.user.companyId),
+          companyId,
           siteId: new Types.ObjectId(e.siteId),
           shiftTemplateId: new Types.ObjectId(e.shiftTemplateId),
           isWorkingDay: e.isWorkingDay,

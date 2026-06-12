@@ -25,7 +25,7 @@ const PatchSchema = z.object({
   designation: z.string().optional(),
   managerId: z.string().nullable().optional(),
   isActive: z.boolean().optional(),
-  role: z.enum(["admin", "manager", "employee"]).optional(),
+  role: z.enum(["admin", "employee"]).optional(),
 });
 
 export const PATCH = withApi(async (req: NextRequest, ctx: { params: { id: string } }) => {

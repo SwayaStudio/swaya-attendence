@@ -146,8 +146,11 @@ export default function SitesPage() {
                   <Input
                     type="number"
                     step="any"
-                    value={draft.lat}
-                    onChange={(e) => setDraft({ ...draft, lat: parseFloat(e.target.value) })}
+                    value={Number.isFinite(draft.lat) ? draft.lat : ""}
+                    onChange={(e) => {
+                      const n = parseFloat(e.target.value);
+                      setDraft({ ...draft, lat: Number.isFinite(n) ? n : 0 });
+                    }}
                   />
                 </div>
                 <div>
@@ -155,8 +158,11 @@ export default function SitesPage() {
                   <Input
                     type="number"
                     step="any"
-                    value={draft.lng}
-                    onChange={(e) => setDraft({ ...draft, lng: parseFloat(e.target.value) })}
+                    value={Number.isFinite(draft.lng) ? draft.lng : ""}
+                    onChange={(e) => {
+                      const n = parseFloat(e.target.value);
+                      setDraft({ ...draft, lng: Number.isFinite(n) ? n : 0 });
+                    }}
                   />
                 </div>
               </div>
@@ -164,9 +170,18 @@ export default function SitesPage() {
                 <Label>Radius (meters)</Label>
                 <Input
                   type="number"
-                  value={draft.radiusMeters}
-                  onChange={(e) => setDraft({ ...draft, radiusMeters: parseInt(e.target.value) })}
+                  min={20}
+                  value={Number.isFinite(draft.radiusMeters) ? draft.radiusMeters : ""}
+                  onChange={(e) => {
+                    const n = parseInt(e.target.value, 10);
+                    // Keep NaN while the box is empty so it can be cleared; the
+                    // map sanitizes it and Save stays disabled until it's valid.
+                    setDraft({ ...draft, radiusMeters: Number.isFinite(n) ? n : NaN });
+                  }}
                 />
+                {!Number.isFinite(draft.radiusMeters) || draft.radiusMeters < 20 ? (
+                  <p className="mt-1 text-xs text-muted-foreground">Enter a radius of at least 20 meters.</p>
+                ) : null}
               </div>
               <div>
                 <Label>Click on the map to set the center, or drag the marker.</Label>
@@ -179,7 +194,10 @@ export default function SitesPage() {
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button onClick={save} disabled={loading || !draft.name}>
+              <Button
+                onClick={save}
+                disabled={loading || !draft.name || !Number.isFinite(draft.radiusMeters) || draft.radiusMeters < 20}
+              >
                 {loading ? "Saving…" : editingId ? "Save changes" : "Save site"}
               </Button>
             </DialogFooter>
