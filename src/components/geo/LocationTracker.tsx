@@ -1,8 +1,15 @@
 "use client";
 
-import { useEffect } from "react";
-import { useBackgroundTracker } from "@/hooks/useBackgroundTracker";
+import { useEffect, useRef } from "react";
+import { startTracker, stopTracker } from "@/lib/tracker";
+import { getDeviceId } from "@/lib/device";
 
+/**
+ * Headless component that drives location tracking while the employee is checked
+ * in. On Android (Capacitor) this uses the native background-geolocation plugin's
+ * foreground service, so pings keep arriving even when the app is backgrounded or
+ * closed. In a plain browser it falls back to a setInterval while the page is open.
+ */
 export function LocationTracker({
   active,
   onAutoCheckout,
@@ -10,27 +17,33 @@ export function LocationTracker({
   active: boolean;
   onAutoCheckout?: () => void;
 }) {
-  const { lastPing, queueSize, running } = useBackgroundTracker({
-    active,
-    intervalMs: 60_000,
-    onError: () => {},
-    onAutoCheckout,
-  });
+  // Keep the latest callback in a ref so starting/stopping doesn't depend on it.
+  const onAutoRef = useRef(onAutoCheckout);
+  onAutoRef.current = onAutoCheckout;
 
+  // Register the service worker (used to queue pings when offline).
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!("serviceWorker" in navigator)) return;
     navigator.serviceWorker.register("/sw.js").catch(() => {
-      // ignore — falls back to foreground only
+      // ignore — falls back to foreground-only
     });
-    const onMsg = (e: MessageEvent) => {
-      if (e.data?.type === "pings-flushed") {
-        // could update UI
-      }
-    };
-    navigator.serviceWorker.addEventListener("message", onMsg);
-    return () => navigator.serviceWorker.removeEventListener("message", onMsg);
   }, []);
 
-  return null; // headless component
+  // Start/stop tracking with the check-in state.
+  useEffect(() => {
+    if (!active) return;
+    startTracker({
+      active: true,
+      deviceId: getDeviceId(),
+      onAutoCheckout: () => onAutoRef.current?.(),
+    }).catch(() => {
+      // ignore — startTracker reports its own errors via onError if provided
+    });
+    return () => {
+      void stopTracker();
+    };
+  }, [active]);
+
+  return null; // headless
 }

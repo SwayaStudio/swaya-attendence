@@ -11,6 +11,7 @@ import { toast } from "@/components/ui/toaster";
 import { formatDuration, formatTime } from "@/lib/utils";
 import dynamic from "next/dynamic";
 import { LocationTracker } from "@/components/geo/LocationTracker";
+import { getDeviceId } from "@/lib/device";
 import {
   CheckCircle2,
   XCircle,
@@ -36,30 +37,6 @@ function getPosition(): Promise<GeolocationPosition> {
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
   });
-}
-
-/**
- * A stable-ish device id for this browser. Uses the Web Crypto API (available in
- * browsers and the Android WebView) and persists it in localStorage. Never
- * imports the Node `crypto` module, which would fail to bundle on the client.
- */
-function getDeviceId(): string {
-  if (typeof window === "undefined") return "web";
-  try {
-    const KEY = "geo-attendance-device-id";
-    let id = window.localStorage.getItem(KEY);
-    if (!id) {
-      const rand =
-        typeof crypto !== "undefined" && crypto.randomUUID
-          ? crypto.randomUUID().slice(0, 8)
-          : Math.random().toString(36).slice(2, 10);
-      id = "web-" + rand;
-      window.localStorage.setItem(KEY, id);
-    }
-    return id;
-  } catch {
-    return "web-" + Math.random().toString(36).slice(2, 10);
-  }
 }
 
 /** H:MM:SS — used for the live, ticking work timer. */
@@ -312,7 +289,16 @@ export default function EmployeePage() {
           )}
 
           {/* Device status */}
-          <div className="flex gap-4 text-xs text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+            {isCheckedIn && (
+              <span className="flex items-center gap-1.5 font-medium text-emerald-600">
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                </span>
+                Tracking active
+              </span>
+            )}
             <span className="flex items-center gap-1">
               <Battery className="h-3 w-3" /> {battery ?? "—"}%
             </span>

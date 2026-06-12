@@ -31,6 +31,8 @@ const APP_VERSION = '1.0.0';
 let nativeWatcherId: string | null = null;
 let webInterval: ReturnType<typeof setInterval> | null = null;
 let webFirstTick: ReturnType<typeof setTimeout> | null = null;
+// Called when the server reports it auto-checked-out the employee from a ping.
+let onAutoCheckoutCb: (() => void) | null = null;
 
 /**
  * Start tracking. Idempotent — calling twice is a no-op.
@@ -40,8 +42,10 @@ export async function startTracker(opts: {
   deviceId?: string;
   intervalMs?: number;
   onError?: (e: Error) => void;
+  onAutoCheckout?: () => void;
 } = { active: true }) {
   if (!opts.active) return;
+  onAutoCheckoutCb = opts.onAutoCheckout ?? null;
   const deviceId = opts.deviceId ?? DEFAULT_DEVICE_ID;
   const intervalMs = opts.intervalMs ?? 15_000;
 
@@ -62,6 +66,7 @@ export async function stopTracker() {
       }
       nativeWatcherId = null;
     }
+    onAutoCheckoutCb = null;
     return;
   }
   if (webInterval) {
@@ -72,6 +77,7 @@ export async function stopTracker() {
     clearTimeout(webFirstTick);
     webFirstTick = null;
   }
+  onAutoCheckoutCb = null;
 }
 
 // ─── Native (Android/iOS) ───────────────────────────────────────────────
@@ -131,10 +137,11 @@ async function startNative(opts: {
 }
 
 async function loadBackgroundGeolocation() {
-  // The plugin's main export is named; some bundlers expose it under .default.
-  const mod: any = await import('@capacitor-community/background-geolocation');
-  const BackgroundGeolocation =
-    mod.BackgroundGeolocation ?? mod.default?.BackgroundGeolocation;
+  // This community plugin (v1.x) ships ONLY native code — there is no JS bundle
+  // to import. It is consumed through Capacitor's registerPlugin, which returns a
+  // proxy that bridges to the native implementation on Android/iOS.
+  const { registerPlugin } = await import('@capacitor/core');
+  const BackgroundGeolocation: any = registerPlugin('BackgroundGeolocation');
   if (!BackgroundGeolocation) {
     throw new Error('BackgroundGeolocation plugin not available');
   }
@@ -158,7 +165,13 @@ async function postPing(payload: PingPayload) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ pings: [payload] }),
     });
-    if (!res.ok) {
+    if (res.ok) {
+      // The server may have auto-checked-out the employee from this ping.
+      const json = await res.json().catch(() => null);
+      if (json?.data?.autoCheckedOut) onAutoCheckoutCb?.();
+      return;
+    }
+    {
       // Native fallback: queue via service worker if registered
       if ('serviceWorker' in navigator) {
         try {
@@ -219,6 +232,8 @@ async function startWeb(opts: { deviceId: string; intervalMs: number }) {
         body: JSON.stringify({ pings: [payload] }),
       });
       if (!res.ok) throw new Error('ping failed: ' + res.status);
+      const json = await res.json().catch(() => null);
+      if (json?.data?.autoCheckedOut) onAutoCheckoutCb?.();
     } catch {
       try {
         const reg = await swReady;

@@ -5,16 +5,17 @@ import { MapContainer, TileLayer, Marker, Circle, useMapEvents, useMap } from "r
 import L from "leaflet";
 // leaflet/dist/leaflet.css is loaded once from src/app/layout.tsx
 
-// Fix default marker icons (Leaflet's default markers are broken in bundlers).
-if (typeof window !== "undefined") {
-  // @ts-expect-error -- delete is fine
-  delete L.Icon.Default.prototype._getIconUrl;
-  L.Icon.Default.mergeOptions({
-    iconRetinaUrl: "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-    iconUrl: "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/images/marker-icon.png",
-    shadowUrl: "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/images/marker-shadow.png",
-  });
-}
+// A self-contained SVG pin (no external image / CDN), so the marker always
+// renders in the Android WebView even when the marker-image CDN is blocked.
+const sitePinIcon = L.divIcon({
+  className: "",
+  html: `<svg width="26" height="38" viewBox="0 0 26 38" xmlns="http://www.w3.org/2000/svg">
+    <path d="M13 0C5.82 0 0 5.82 0 13c0 9.75 13 25 13 25s13-15.25 13-25C26 5.82 20.18 0 13 0z" fill="#2563eb"/>
+    <circle cx="13" cy="13" r="5" fill="#ffffff"/>
+  </svg>`,
+  iconSize: [26, 38],
+  iconAnchor: [13, 38],
+});
 
 export type GeofenceValue = {
   lat: number;
@@ -71,6 +72,7 @@ export function GeofenceMap({ value, onChange, height = 400, zoom = 14 }: Props)
         <RecenterOn lat={safeLat} lng={safeLng} zoom={zoom} />
         <Marker
           position={center}
+          icon={sitePinIcon}
           draggable={editable}
           eventHandlers={{
             dragend: (e) => {
@@ -104,7 +106,7 @@ export function MapReadOnly({ lat, lng, radiusMeters, height = 300 }: { lat: num
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        <Marker position={[safeLat, safeLng]} />
+        <Marker position={[safeLat, safeLng]} icon={sitePinIcon} />
         <Circle center={[safeLat, safeLng]} radius={safeRadius} pathOptions={{ color: "#3b82f6", fillColor: "#3b82f6", fillOpacity: 0.15 }} />
       </MapContainer>
     </div>

@@ -5,6 +5,18 @@ import { MapContainer, TileLayer, Marker, Circle } from "react-leaflet";
 import L from "leaflet";
 // leaflet/dist/leaflet.css is loaded once from src/app/layout.tsx
 
+// A self-contained SVG pin (no external image), so it always renders in the
+// Android WebView even if the marker-image CDN is blocked or offline.
+const sitePinIcon = L.divIcon({
+  className: "",
+  html: `<svg width="26" height="38" viewBox="0 0 26 38" xmlns="http://www.w3.org/2000/svg">
+    <path d="M13 0C5.82 0 0 5.82 0 13c0 9.75 13 25 13 25s13-15.25 13-25C26 5.82 20.18 0 13 0z" fill="#2563eb"/>
+    <circle cx="13" cy="13" r="5" fill="#ffffff"/>
+  </svg>`,
+  iconSize: [26, 38],
+  iconAnchor: [13, 38],
+});
+
 export function LiveTrackerMap({
   siteLat,
   siteLng,
@@ -28,7 +40,7 @@ export function LiveTrackerMap({
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        <Marker position={[siteLat, siteLng]} />
+        <Marker position={[siteLat, siteLng]} icon={sitePinIcon} />
         <Circle
           center={[siteLat, siteLng]}
           radius={radiusMeters}
