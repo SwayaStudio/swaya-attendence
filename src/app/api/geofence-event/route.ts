@@ -46,5 +46,12 @@ export const POST = withApi(async (req: NextRequest) => {
       ? await processGeofenceExit(common)
       : await processGeofenceEnter({ ...common, deviceId: "geofence" });
 
+  // Surfaces the direction + outcome in the Vercel logs so you can see whether a
+  // killed-app EXIT actually auto-checked-out (ok:true) or found no session.
+  // eslint-disable-next-line no-console
+  console.log(
+    `[geofence] ${body.transition} employee=${payload.employeeId} ok=${(result as { ok?: boolean }).ok}`
+  );
+
   return ok({ transition: body.transition, result });
 });
