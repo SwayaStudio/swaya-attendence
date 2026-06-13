@@ -11,6 +11,8 @@
  * so the server-side processPings() doesn't need to know which one fired.
  */
 import { isNative, getPlatform } from './platform';
+import { readBatteryPercent, readNetworkType } from './device-status';
+import { notifyCheckedOut } from './notifications';
 
 type PingPayload = {
   lat: number;
@@ -120,8 +122,8 @@ async function startNative(opts: {
           lng: location.longitude,
           accuracy: location.accuracy,
           isMockLocation: location.simulated,
-          batteryPercentage: await getBatteryPercent(),
-          networkType: getNetworkType(),
+          batteryPercentage: (await readBatteryPercent()) ?? undefined,
+          networkType: await readNetworkType(),
           appState: 'background',
           deviceId: opts.deviceId,
           appVersion: APP_VERSION,
@@ -148,16 +150,6 @@ async function loadBackgroundGeolocation() {
   return { BackgroundGeolocation };
 }
 
-function getNetworkType(): PingPayload['networkType'] {
-  if (typeof navigator === 'undefined') return 'unknown';
-  const conn: any = (navigator as any).connection;
-  if (!conn) return navigator.onLine ? 'mobile_data' : 'offline';
-  if (conn.type === 'wifi') return 'wifi';
-  if (conn.type === 'cellular') return 'mobile_data';
-  if (conn.type === 'none') return 'offline';
-  return navigator.onLine ? 'mobile_data' : 'offline';
-}
-
 async function postPing(payload: PingPayload) {
   try {
     const res = await fetch('/api/pings', {
@@ -168,7 +160,10 @@ async function postPing(payload: PingPayload) {
     if (res.ok) {
       // The server may have auto-checked-out the employee from this ping.
       const json = await res.json().catch(() => null);
-      if (json?.data?.autoCheckedOut) onAutoCheckoutCb?.();
+      if (json?.data?.autoCheckedOut) {
+        onAutoCheckoutCb?.();
+        void notifyCheckedOut();
+      }
       return;
     }
     {
@@ -207,8 +202,8 @@ async function startWeb(opts: { deviceId: string; intervalMs: number }) {
 
   async function sendPing(coords: { lat: number; lng: number; accuracy?: number }) {
     const capturedAt = new Date().toISOString();
-    const battery = await getBatteryPercent();
-    const network: PingPayload['networkType'] = navigator.onLine ? 'mobile_data' : 'offline';
+    const battery = (await readBatteryPercent()) ?? undefined;
+    const network = await readNetworkType();
     const payload: PingPayload = {
       lat: coords.lat,
       lng: coords.lng,
@@ -233,7 +228,10 @@ async function startWeb(opts: { deviceId: string; intervalMs: number }) {
       });
       if (!res.ok) throw new Error('ping failed: ' + res.status);
       const json = await res.json().catch(() => null);
-      if (json?.data?.autoCheckedOut) onAutoCheckoutCb?.();
+      if (json?.data?.autoCheckedOut) {
+        onAutoCheckoutCb?.();
+        void notifyCheckedOut();
+      }
     } catch {
       try {
         const reg = await swReady;
@@ -263,16 +261,6 @@ async function startWeb(opts: { deviceId: string; intervalMs: number }) {
 
   webInterval = setInterval(tick, opts.intervalMs);
   webFirstTick = setTimeout(tick, 1500);
-}
-
-async function getBatteryPercent(): Promise<number | undefined> {
-  try {
-    const b: any = await (navigator as any).getBattery?.();
-    if (b) return Math.round(b.level * 100);
-  } catch {
-    // ignore
-  }
-  return undefined;
 }
 
 // Re-export for callers that want to know which platform the tracker chose

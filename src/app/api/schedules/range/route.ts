@@ -11,6 +11,7 @@ import { EmployeeSchedule, ShiftTemplate, Company, Holiday, WorkSite, User } fro
 import { requireRole, ok, fail, withApi } from "@/lib/api-helpers";
 import { ScheduleRangeSchema } from "@/lib/validators";
 import { enumerateWorkDates, isSunday, zonedDateTimeToUtc } from "@/lib/workdate";
+import { resolveShiftEnd } from "@/lib/attendance-logic";
 
 const MAX_OPERATIONS = 10_000; // guard against accidental huge writes
 
@@ -77,12 +78,11 @@ export const POST = withApi(async (req: NextRequest) => {
 
       if (isWorkingDay && shift) {
         set.expectedStartAt = zonedDateTimeToUtc(date, shift.startTime, timezone);
-        let end = zonedDateTimeToUtc(date, shift.endTime, timezone);
-        if (end <= set.expectedStartAt) {
-          // Overnight shift — end time is on the next calendar day.
-          end = new Date(end.getTime() + 86_400_000);
-        }
-        set.expectedEndAt = end;
+        const endRaw = zonedDateTimeToUtc(date, shift.endTime, timezone);
+        // Overnight shift — end time is on the next calendar day.
+        set.expectedEndAt = new Date(
+          resolveShiftEnd(set.expectedStartAt.getTime(), endRaw.getTime())
+        );
       } else {
         // Off day — clear any stale expected times.
         update.$unset = { expectedStartAt: "", expectedEndAt: "" };

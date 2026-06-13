@@ -12,6 +12,10 @@ import { formatDuration, formatTime } from "@/lib/utils";
 import dynamic from "next/dynamic";
 import { LocationTracker } from "@/components/geo/LocationTracker";
 import { getDeviceId } from "@/lib/device";
+import { readBatteryPercent, readNetworkType, subscribeNetwork } from "@/lib/device-status";
+import { getCurrentLocation } from "@/lib/geolocation";
+import { getQueue, enqueueAction, replayQueue, type QueuedAction } from "@/lib/offline-queue";
+import { haversineDistanceMeters } from "@/lib/geo";
 import {
   CheckCircle2,
   XCircle,
@@ -28,16 +32,6 @@ const LiveTrackerMap = dynamic(
   () => import("@/components/geo/LiveTrackerMap").then((m) => m.LiveTrackerMap),
   { ssr: false, loading: () => <div className="h-[250px] w-full rounded-md border bg-muted animate-pulse" /> }
 );
-
-function getPosition(): Promise<GeolocationPosition> {
-  return new Promise((resolve, reject) => {
-    navigator.geolocation.getCurrentPosition(
-      resolve,
-      reject,
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
-  });
-}
 
 /** H:MM:SS — used for the live, ticking work timer. */
 function formatHMS(totalSeconds: number): string {
@@ -68,6 +62,7 @@ export default function EmployeePage() {
   const [network, setNetwork] = useState<string>("unknown");
   const [tracking, setTracking] = useState(false);
   const [nowTs, setNowTs] = useState(0);
+  const [pending, setPending] = useState<QueuedAction[]>([]);
 
   const loadSeq = useRef(0);
   const loadToday = useCallback(async () => {
@@ -87,21 +82,109 @@ export default function EmployeePage() {
     loadToday();
   }, [loadToday]);
 
+  // Live device status: battery + network read on mount, network updates via a
+  // listener, battery refreshed periodically. Uses the Capacitor plugins on the
+  // native app and their web fallback in the browser.
+  useEffect(() => {
+    let mounted = true;
+    let unsub = () => {};
+    (async () => {
+      const [b, n] = await Promise.all([readBatteryPercent(), readNetworkType()]);
+      if (!mounted) return;
+      setBattery(b);
+      setNetwork(n);
+      unsub = await subscribeNetwork((t) => {
+        if (mounted) setNetwork(t);
+      });
+    })();
+    const battTimer = setInterval(async () => {
+      const b = await readBatteryPercent();
+      if (mounted) setBattery(b);
+    }, 60_000);
+    return () => {
+      mounted = false;
+      unsub();
+      clearInterval(battTimer);
+    };
+  }, []);
+
+  // Sync queued offline check-ins/outs when online (and on mount / "online" event).
+  useEffect(() => {
+    let cancelled = false;
+    const sync = async () => {
+      if (getQueue().length === 0) return;
+      const n = await replayQueue();
+      if (cancelled) return;
+      setPending(getQueue());
+      if (n > 0) {
+        toast({ title: `Synced ${n} offline action${n > 1 ? "s" : ""}` });
+        loadToday();
+      }
+    };
+    setPending(getQueue());
+    sync();
+    const onOnline = () => sync();
+    window.addEventListener("online", onOnline);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("online", onOnline);
+    };
+  }, [loadToday]);
+
+  // Save a check-in/out locally when the network is down (after a client-side
+  // geofence check for check-in) — it syncs automatically once back online.
+  function queueOffline(type: "check-in" | "check-out", coords: { latitude: number; longitude: number; accuracy?: number }) {
+    if (type === "check-in") {
+      const s = today?.site;
+      if (!s || !Array.isArray(s.location?.coordinates)) {
+        toast({
+          title: "You're offline",
+          description: "Can't verify your work site offline. Connect to the internet to check in.",
+          variant: "destructive",
+        });
+        return;
+      }
+      const dist = haversineDistanceMeters(
+        { lat: coords.latitude, lng: coords.longitude },
+        { lat: s.location.coordinates[1], lng: s.location.coordinates[0] }
+      );
+      if (dist > s.radiusMeters + (coords.accuracy ?? 0)) {
+        toast({
+          title: "Outside the work site",
+          description: "You're not within the site to check in.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+    enqueueAction({
+      type,
+      lat: coords.latitude,
+      lng: coords.longitude,
+      accuracy: coords.accuracy,
+      capturedAt: new Date().toISOString(),
+      deviceId: getDeviceId(),
+    });
+    setPending(getQueue());
+    toast({
+      title: type === "check-in" ? "Checked in (offline)" : "Checked out (offline)",
+      description: "Saved on your device — it will sync automatically when you're back online.",
+    });
+  }
+
   const handleCheckIn = async () => {
     setLoading(true);
+    let coords;
     try {
-      const pos = await getPosition();
-      const coords = pos.coords;
-      setLastLat(coords.latitude);
-      setLastLng(coords.longitude);
-
-      // battery
-      const bat = await (navigator as Navigator & { getBattery?: () => Promise<{ level: number }> }).getBattery?.()
-        .then((b) => b.level)
-        .catch(() => undefined);
-      setBattery(bat != null ? Math.round(bat * 100) : null);
-      setNetwork(navigator.onLine ? "mobile_data" : "offline");
-
+      coords = await getCurrentLocation();
+    } catch (e: any) {
+      toast({ title: "Location error", description: e.message, variant: "destructive" });
+      setLoading(false);
+      return;
+    }
+    setLastLat(coords.latitude);
+    setLastLng(coords.longitude);
+    try {
       const res = await fetch("/api/attendance/check-in", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -121,8 +204,9 @@ export default function EmployeePage() {
       toast({ title: "Checked in at " + json.data.site.name });
       setTracking(true);
       loadToday();
-    } catch (e: any) {
-      toast({ title: "Location error", description: e.message, variant: "destructive" });
+    } catch {
+      // Network failure — fall back to the offline queue.
+      queueOffline("check-in", coords);
     } finally {
       setLoading(false);
     }
@@ -130,12 +214,17 @@ export default function EmployeePage() {
 
   const handleCheckOut = async () => {
     setLoading(true);
+    let coords;
     try {
-      const pos = await getPosition();
-      const coords = pos.coords;
-      setLastLat(coords.latitude);
-      setLastLng(coords.longitude);
-
+      coords = await getCurrentLocation();
+    } catch (e: any) {
+      toast({ title: "Location error", description: e.message, variant: "destructive" });
+      setLoading(false);
+      return;
+    }
+    setLastLat(coords.latitude);
+    setLastLng(coords.longitude);
+    try {
       const res = await fetch("/api/attendance/check-out", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -153,8 +242,9 @@ export default function EmployeePage() {
       toast({ title: "Checked out successfully" });
       setTracking(false);
       loadToday();
-    } catch (e: any) {
-      toast({ title: "Location error", description: e.message, variant: "destructive" });
+    } catch {
+      // Network failure — fall back to the offline queue.
+      queueOffline("check-out", coords);
     } finally {
       setLoading(false);
     }
@@ -174,9 +264,13 @@ export default function EmployeePage() {
   const currentSession = today?.sessions?.[0];
   // "Checked in" means a session is still open — not the day's overall status,
   // which stays "present"/"late" even after the employee checks out.
-  const isCheckedIn = !!today?.sessions?.some(
+  const serverCheckedIn = !!today?.sessions?.some(
     (s: any) => s.status === "active" || s.status === "flagged"
   );
+  // A queued offline check-in/out overrides the server view optimistically until
+  // it syncs, so the button + tracker reflect what the employee just did offline.
+  const lastPendingType = pending.length ? pending[pending.length - 1].type : null;
+  const isCheckedIn = lastPendingType ? lastPendingType === "check-in" : serverCheckedIn;
   // A scheduled non-working day (weekly off / company holiday) — no check-in needed.
   const isDayOff = today?.schedule != null && today.schedule.isWorkingDay === false;
   // An approved leave covering today — also no check-in needed.
@@ -195,6 +289,20 @@ export default function EmployeePage() {
       clearInterval(poll);
     };
   }, [isCheckedIn, loadToday]);
+
+  // Persist the checked-in state natively (Capacitor Preferences) so the Android
+  // BootReceiver knows whether to prompt the employee to resume tracking after a
+  // reboot. No-op in a plain browser.
+  useEffect(() => {
+    (async () => {
+      try {
+        const { Preferences } = await import("@capacitor/preferences");
+        await Preferences.set({ key: "checkedIn", value: isCheckedIn ? "true" : "false" });
+      } catch {
+        /* not native */
+      }
+    })();
+  }, [isCheckedIn]);
 
   const activeSession = today?.sessions?.find(
     (s: any) => s.status === "active" || s.status === "flagged"
@@ -237,6 +345,12 @@ export default function EmployeePage() {
               currentLng={lastLng}
               height={250}
             />
+          )}
+
+          {pending.length > 0 && (
+            <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-center text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+              {pending.length} offline action{pending.length > 1 ? "s" : ""} saved — will sync automatically when you&apos;re back online.
+            </div>
           )}
 
           {noCheckInNeeded && !isCheckedIn ? (

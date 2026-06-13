@@ -5,7 +5,7 @@ import { NextRequest } from "next/server";
 import { Types } from "mongoose";
 import bcrypt from "bcryptjs";
 import { connectDB } from "@/lib/db";
-import { User, EmployeeSiteAssignment } from "@/models";
+import { User, EmployeeSiteAssignment, WorkSite } from "@/models";
 import { requireRole, ok, withApi, fail } from "@/lib/api-helpers";
 import { EmployeeCreateSchema } from "@/lib/validators";
 
@@ -53,10 +53,21 @@ export const POST = withApi(async (req: NextRequest) => {
     isActive: true,
   });
 
-  // Site assignments
+  // Site assignments — only sites that actually belong to THIS company. Without
+  // this, a forged siteId in the body would assign the new employee to another
+  // company's geofence (cross-tenant reference). Invalid ids are dropped.
   if (body.siteIds && body.siteIds.length) {
+    const validIds = body.siteIds.filter((s) => Types.ObjectId.isValid(s));
+    const ownedSites = await WorkSite.find({
+      _id: { $in: validIds.map((s) => new Types.ObjectId(s)) },
+      companyId: new Types.ObjectId(session.user.companyId),
+    })
+      .select("_id")
+      .lean();
+    const ownedIds = ownedSites.map((s: { _id: unknown }) => String(s._id));
+    const orderedOwned = validIds.filter((s) => ownedIds.includes(s));
     await Promise.all(
-      body.siteIds.map((siteId, i) =>
+      orderedOwned.map((siteId, i) =>
         EmployeeSiteAssignment.create({
           companyId: new Types.ObjectId(session.user.companyId),
           employeeId: user._id,

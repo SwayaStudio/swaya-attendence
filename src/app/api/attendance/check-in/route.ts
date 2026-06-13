@@ -32,6 +32,7 @@ export const POST = withApi(async (req: NextRequest) => {
     appState: appState as any,
     networkType: networkType as any,
     batteryPercentage,
+    capturedAt: body.capturedAt,
   });
 
   if (!result.ok) {

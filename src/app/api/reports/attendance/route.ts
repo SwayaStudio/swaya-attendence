@@ -4,8 +4,9 @@
 import { NextRequest } from "next/server";
 import { Types } from "mongoose";
 import { connectDB } from "@/lib/db";
-import { AttendanceDay, User } from "@/models";
+import { AttendanceDay, AttendanceSession, User } from "@/models";
 import { requireAuth, ok, withApi, fail } from "@/lib/api-helpers";
+import { csvEscape } from "@/lib/csv";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,13 @@ export const GET = withApi(async (req: NextRequest) => {
   const siteId = url.searchParams.get("siteId") || "";
   const employeeIdParam = url.searchParams.get("employeeId") || "";
   const format = url.searchParams.get("format") || "json";
+
+  // Reject malformed ids up front with a 400 (otherwise `new Types.ObjectId`
+  // throws a BSONError that surfaces as a 500).
+  if (siteId && !Types.ObjectId.isValid(siteId)) return fail("Invalid siteId", 400);
+  if (employeeIdParam && !Types.ObjectId.isValid(employeeIdParam)) {
+    return fail("Invalid employeeId", 400);
+  }
 
   const filter: any = { companyId: session.user.companyId };
   if (from || to) {
@@ -44,13 +52,23 @@ export const GET = withApi(async (req: NextRequest) => {
     .lean();
   const userMap = new Map(users.map((u: { _id: unknown; fullName: string; employeeCode?: string; email: string }) => [String(u._id), u]));
 
-  const rows = days.map((d: { employeeId: unknown }) => {
+  // How many times each employee actually checked out that day (one count per
+  // completed session — includes auto check-outs). Single aggregation, no N+1.
+  const dayIds = days.map((d: { _id: unknown }) => d._id);
+  const counts = await AttendanceSession.aggregate([
+    { $match: { attendanceDayId: { $in: dayIds }, checkOutAt: { $ne: null } } },
+    { $group: { _id: "$attendanceDayId", count: { $sum: 1 } } },
+  ]);
+  const countMap = new Map(counts.map((c: { _id: unknown; count: number }) => [String(c._id), c.count]));
+
+  const rows = days.map((d: { _id: unknown; employeeId: unknown }) => {
     const u = userMap.get(String(d.employeeId)) || ({} as any);
     return {
       ...d,
       employeeName: u.fullName,
       employeeCode: u.employeeCode,
       employeeEmail: u.email,
+      checkOutCount: countMap.get(String(d._id)) || 0,
     };
   });
 
@@ -75,6 +93,7 @@ function toCsv(rows: any[]): string {
     "Status",
     "Check-in",
     "Check-out",
+    "Check-out count",
     "Work (sec)",
     "Inside (sec)",
     "Outside (sec)",
@@ -93,6 +112,7 @@ function toCsv(rows: any[]): string {
         r.status,
         r.firstCheckInAt ? new Date(r.firstCheckInAt).toISOString() : "",
         r.lastCheckOutAt ? new Date(r.lastCheckOutAt).toISOString() : "",
+        r.checkOutCount || 0,
         r.totalWorkSeconds || 0,
         r.totalInsideSeconds || 0,
         r.totalOutsideSeconds || 0,
@@ -103,10 +123,4 @@ function toCsv(rows: any[]): string {
     );
   }
   return lines.join("\n");
-}
-
-function csvEscape(s: string): string {
-  if (s == null) return "";
-  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
 }

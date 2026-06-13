@@ -8,6 +8,7 @@ import { EmployeeSchedule, ShiftTemplate, WorkSite, Company, User } from "@/mode
 import { requireAuth, requireRole, ok, withApi } from "@/lib/api-helpers";
 import { ScheduleBulkSchema } from "@/lib/validators";
 import { zonedDateTimeToUtc } from "@/lib/workdate";
+import { resolveShiftEnd } from "@/lib/attendance-logic";
 
 export const GET = withApi(async (req: NextRequest) => {
   const session = await requireAuth();
@@ -54,11 +55,11 @@ export const POST = withApi(async (req: NextRequest) => {
     }
     const shift = shiftMap.get(e.shiftTemplateId);
     const expectedStartAt = zonedDateTimeToUtc(body.workDate, shift.startTime, timezone);
-    let expectedEndAt = zonedDateTimeToUtc(body.workDate, shift.endTime, timezone);
-    if (expectedEndAt <= expectedStartAt) {
-      // Overnight shift (end time is on the next calendar day).
-      expectedEndAt = new Date(expectedEndAt.getTime() + 86_400_000);
-    }
+    const endRaw = zonedDateTimeToUtc(body.workDate, shift.endTime, timezone);
+    // Overnight shift (end time is on the next calendar day).
+    const expectedEndAt = new Date(
+      resolveShiftEnd(expectedStartAt.getTime(), endRaw.getTime())
+    );
     const result = await EmployeeSchedule.findOneAndUpdate(
       {
         companyId,

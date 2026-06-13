@@ -31,6 +31,16 @@ const AttendanceSessionSchema = new Schema(
     checkInLocation: { type: GeoPointSchema, required: true },
     checkInAccuracyMeters: { type: Number },
     checkInDistanceMeters: { type: Number },
+    // Snapshot of the site's geofence at check-in. Used for all geofence math on
+    // this session, so editing the site (or reassigning the employee) mid-shift
+    // does NOT move the geofence under someone already checked in.
+    geofence: {
+      type: new Schema(
+        { lat: Number, lng: Number, radiusMeters: Number },
+        { _id: false }
+      ),
+      default: null,
+    },
     checkOutAt: { type: Date, default: null },
     checkOutLocation: { type: GeoPointSchema, default: null },
     checkOutAccuracyMeters: { type: Number },

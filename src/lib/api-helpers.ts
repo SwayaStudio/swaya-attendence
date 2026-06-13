@@ -23,15 +23,24 @@ export class ApiError extends Error {
   }
 }
 
+// Every API response is per-user, request-specific data — never cache it. Without
+// this, the browser/edge can serve a stale copy of a GET /api/... response on a
+// soft refresh, which is why changes sometimes need several refreshes to appear.
+const NO_STORE = "no-store, max-age=0, must-revalidate";
+
 export function ok<T>(data: T, init?: ResponseInit) {
-  return NextResponse.json({ ok: true, data }, init);
+  const res = NextResponse.json({ ok: true, data }, init);
+  res.headers.set("Cache-Control", NO_STORE);
+  return res;
 }
 
 export function fail(message: string, status = 400, extra?: object) {
-  return NextResponse.json(
+  const res = NextResponse.json(
     { ok: false, error: message, ...(extra ?? {}) },
     { status }
   );
+  res.headers.set("Cache-Control", NO_STORE);
+  return res;
 }
 
 export async function requireAuth() {

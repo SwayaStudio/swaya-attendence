@@ -39,9 +39,15 @@ export const GET = withApi(async (_req: NextRequest) => {
     ? await ShiftTemplate.findById(schedule.shiftTemplateId).lean()
     : null;
 
+  // Which site to show on the map: once checked in, the day's site; before that,
+  // the SCHEDULED site for today (so the employee sees where to go on a rotation
+  // day). Falls back to null when neither exists.
+  const displaySite =
+    site ?? (schedule?.siteId ? await WorkSite.findById(schedule.siteId).lean() : null);
+
   // If a session is open, overlay live (cumulative) totals so the dashboard shows
   // work/outside time changing while checked in.
   const dayOut = live && day ? { ...day, ...live } : day;
 
-  return ok({ day: dayOut, sessions, site, schedule, shift, leave });
+  return ok({ day: dayOut, sessions, site: displaySite, schedule, shift, leave });
 });

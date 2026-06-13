@@ -26,6 +26,7 @@ export const POST = withApi(async (req: NextRequest) => {
     lng,
     accuracyMeters: accuracy,
     isMockLocation,
+    capturedAt: body.capturedAt,
   });
 
   if (!result.ok) {

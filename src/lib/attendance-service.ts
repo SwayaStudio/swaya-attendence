@@ -13,13 +13,33 @@ import {
   LocationPing,
   OutsideSiteLog,
   ShiftTemplate,
+  User,
   WorkSite,
 } from "@/models";
 import { haversineDistanceMeters, isInsideGeofence } from "./geo";
-import { todayWorkDate, isWithinLocalTimeWindow } from "./workdate";
+import {
+  summarizeSessionPings,
+  computeDayTotals,
+  effectiveInsideState,
+  isSustainedAway,
+  evaluateScheduleGate,
+  evaluateLateness,
+  clampCheckOut,
+  classifyOutsideForDay,
+  resolveAutoCheckout,
+  isPingGapCheckout,
+} from "./attendance-logic";
+import {
+  todayWorkDate,
+  getWorkDateInTimezone,
+  isWithinLocalTimeWindow,
+  zonedDateTimeToUtc,
+} from "./workdate";
 import { getCompanyTimezone } from "./company";
 import { flagPings, type PingLike } from "./attendance";
+import { sendEmail } from "./email";
 import { env } from "./env";
+import { formatInTimeZone } from "date-fns-tz";
 
 export type CheckInInput = {
   employeeId: string;
@@ -34,6 +54,9 @@ export type CheckInInput = {
   appState?: "foreground" | "background" | "killed" | "unknown";
   networkType?: "wifi" | "mobile_data" | "offline" | "unknown";
   batteryPercentage?: number;
+  // When a check-in was made OFFLINE and is being synced later, this is the time
+  // it actually happened. Defaults to "now" for normal online check-ins.
+  capturedAt?: string;
 };
 
 export type CheckInResult =
@@ -62,6 +85,7 @@ export async function findSiteForCheckIn(opts: {
 
   const sites = await WorkSite.find({
     _id: { $in: assignments.map((a: { siteId: unknown }) => a.siteId) },
+    companyId: new Types.ObjectId(opts.companyId),
     isActive: true,
   }).lean();
 
@@ -89,13 +113,74 @@ export async function findSiteForCheckIn(opts: {
   return bestInside || bestOverall;
 }
 
+/**
+ * Decide which work site a check-in is validated against.
+ *  - If the employee has a schedule for `workDate` that is a working day with a
+ *    site, that SCHEDULED site is used (per-day rotation). The schedule grants
+ *    access to that site for the day even if it isn't a permanent assignment.
+ *  - Otherwise fall back to the employee's permanent site assignment(s).
+ * Returns the chosen site + the employee's distance from it, or null.
+ */
+async function resolveCheckInSite(
+  input: { employeeId: string; companyId: string; lat: number; lng: number; accuracyMeters?: number },
+  workDate: string
+): Promise<{ site: any; distance: number } | null> {
+  const schedule = await EmployeeSchedule.findOne({
+    employeeId: new Types.ObjectId(input.employeeId),
+    workDate,
+  }).lean();
+
+  if (schedule && schedule.isWorkingDay && schedule.siteId) {
+    const site = await WorkSite.findOne({
+      _id: schedule.siteId,
+      companyId: new Types.ObjectId(input.companyId),
+      isActive: true,
+    }).lean();
+    if (site) {
+      const [lng, lat] = site.location.coordinates;
+      const { distance } = isInsideGeofence(
+        { lat: input.lat, lng: input.lng },
+        { lat, lng },
+        site.radiusMeters,
+        input.accuracyMeters ?? 0
+      );
+      return { site, distance };
+    }
+    // Scheduled site missing/inactive — fall through to permanent assignments.
+  }
+
+  return findSiteForCheckIn(input);
+}
+
 export async function processCheckIn(input: CheckInInput): Promise<CheckInResult> {
   await connectDB();
+  // Effective check-in time: the captured time for an offline check-in being
+  // synced later, otherwise now.
+  const at = input.capturedAt ? new Date(input.capturedAt) : new Date();
+  const workDate = getWorkDateInTimezone(at, input.timezone);
+
   // Enforce scheduled shift hours (when the employee has a schedule for today).
-  const gate = await scheduleGate(input.employeeId, todayWorkDate(input.timezone));
+  const gate = await scheduleGate(input.employeeId, workDate, at.getTime());
   if (!gate.ok) return { ok: false, reason: gate.reason };
 
-  const found = await findSiteForCheckIn(input);
+  // Idempotency / duplicate-check-in guard: never open a second concurrent
+  // session. A double-tap, a network retry, or an offline-queue replay of a
+  // check-in that already succeeded online would otherwise create overlapping
+  // active sessions and double-count cumulative work time. Rejecting here makes
+  // the offline replay drop the action (it treats 4xx as "already handled").
+  const openSession = await AttendanceSession.findOne({
+    employeeId: new Types.ObjectId(input.employeeId),
+    status: { $in: ["active", "flagged"] },
+  })
+    .select("_id")
+    .lean();
+  if (openSession) {
+    return { ok: false, reason: "already_checked_in" };
+  }
+
+  // On a scheduled working day, validate the geofence against the SCHEDULED site
+  // (per-day rotation); otherwise fall back to the permanent site assignment.
+  const found = await resolveCheckInSite(input, workDate);
   if (!found) {
     return { ok: false, reason: "no_assignment" };
   }
@@ -128,8 +213,6 @@ export async function processCheckIn(input: CheckInInput): Promise<CheckInResult
     }
   }
 
-  const workDate = todayWorkDate(input.timezone);
-
   // Upsert attendance day
   const day = await AttendanceDay.findOneAndUpdate(
     {
@@ -160,10 +243,16 @@ export async function processCheckIn(input: CheckInInput): Promise<CheckInResult
     companyId: new Types.ObjectId(input.companyId),
     employeeId: new Types.ObjectId(input.employeeId),
     siteId: found.site._id,
-    checkInAt: new Date(),
+    checkInAt: at,
     checkInLocation: { type: "Point", coordinates: [input.lng, input.lat] },
     checkInAccuracyMeters: input.accuracyMeters,
     checkInDistanceMeters: found.distance,
+    // Freeze the geofence for this session at the moment of check-in.
+    geofence: {
+      lat: found.site.location.coordinates[1],
+      lng: found.site.location.coordinates[0],
+      radiusMeters: found.site.radiusMeters,
+    },
     status: input.isMockLocation ? "flagged" : "active",
     deviceId: input.deviceId,
     appVersion: input.appVersion,
@@ -176,7 +265,7 @@ export async function processCheckIn(input: CheckInInput): Promise<CheckInResult
     companyId: new Types.ObjectId(input.companyId),
     employeeId: new Types.ObjectId(input.employeeId),
     siteId: found.site._id,
-    capturedAt: new Date(),
+    capturedAt: at,
     location: { type: "Point", coordinates: [input.lng, input.lat] },
     accuracyMeters: input.accuracyMeters,
     distanceFromSiteMeters: found.distance,
@@ -196,28 +285,26 @@ export async function processCheckIn(input: CheckInInput): Promise<CheckInResult
     employeeId: new Types.ObjectId(input.employeeId),
     siteId: found.site._id,
     eventType: "entered_site",
-    eventAt: new Date(),
+    eventAt: at,
     location: { type: "Point", coordinates: [input.lng, input.lat] },
     accuracyMeters: input.accuracyMeters,
     distanceFromSiteMeters: found.distance,
   });
 
   // Update day
-  day.firstCheckInAt = day.firstCheckInAt ?? new Date();
+  day.firstCheckInAt = day.firstCheckInAt ?? at;
   if (schedule) {
     day.scheduleId = schedule._id;
-    if (schedule.expectedStartAt) {
-      const graceMin = await getGraceMinutesForSchedule(schedule);
-      const lateMs = new Date().getTime() - new Date(schedule.expectedStartAt).getTime();
-      if (lateMs > graceMin * 60_000) {
-        day.lateByMinutes = Math.floor(lateMs / 60_000);
-        day.status = "late";
-      } else {
-        day.status = "present";
-      }
-    } else {
-      day.status = "present";
-    }
+    const graceMin = schedule.expectedStartAt
+      ? await getGraceMinutesForSchedule(schedule)
+      : 0;
+    const lateness = evaluateLateness(
+      schedule.expectedStartAt ? new Date(schedule.expectedStartAt).getTime() : null,
+      at.getTime(),
+      graceMin
+    );
+    day.status = lateness.status;
+    if (lateness.status === "late") day.lateByMinutes = lateness.lateByMinutes;
   } else {
     day.status = "present";
   }
@@ -251,10 +338,18 @@ export async function processCheckOut(opts: {
   deviceId?: string;
   appVersion?: string;
   timezone: string;
+  capturedAt?: string;
 }) {
   await connectDB();
-  // Enforce scheduled shift hours (when the employee has a schedule for today).
-  const gate = await scheduleGate(opts.employeeId, todayWorkDate(opts.timezone));
+  // Effective check-out time: captured time for an offline check-out, else now.
+  const at = opts.capturedAt ? new Date(opts.capturedAt) : new Date();
+
+  // Enforce scheduled shift hours (when the employee has a schedule for the day).
+  const gate = await scheduleGate(
+    opts.employeeId,
+    getWorkDateInTimezone(at, opts.timezone),
+    at.getTime()
+  );
   if (!gate.ok) return { ok: false as const, reason: gate.reason };
 
   const session = await AttendanceSession.findOne({
@@ -268,10 +363,52 @@ export async function processCheckOut(opts: {
     lat: opts.lat,
     lng: opts.lng,
     accuracyMeters: opts.accuracyMeters,
-    checkOutAt: new Date(),
+    checkOutAt: at,
     status: opts.isMockLocation ? "flagged" : "completed",
   });
   return { ok: true as const, session, day };
+}
+
+/**
+ * Best-effort email to the company's admins when an employee checks out, so they
+ * can follow up (e.g. call the employee). Includes name, code, phone, time, reason.
+ */
+async function notifyAdminOfCheckout(session: any, reason?: string) {
+  const [employee, admins, timezone] = await Promise.all([
+    User.findById(session.employeeId).lean(),
+    User.find({ companyId: session.companyId, role: "admin", isActive: true })
+      .select("email")
+      .lean(),
+    getCompanyTimezone(String(session.companyId)),
+  ]);
+  if (!employee || !admins.length) return;
+
+  const when = formatInTimeZone(new Date(session.checkOutAt), timezone, "yyyy-MM-dd HH:mm");
+  const reasonLabel =
+    reason === "auto_checkout_left_site"
+      ? "Automatic — left the site"
+      : reason === "auto_checkout_shift_ended"
+        ? "Automatic — shift ended"
+        : reason === "auto_checkout_ping_gap"
+          ? "Automatic — app closed / tracking lost"
+          : "Manual check-out";
+
+  const html = `
+    <p><b>${employee.fullName}</b> has checked out.</p>
+    <ul>
+      <li>Name: ${employee.fullName}</li>
+      <li>Employee code: ${employee.employeeCode || "—"}</li>
+      <li>Phone: ${employee.phone || "—"}</li>
+      <li>Time: ${when}</li>
+      <li>Type: ${reasonLabel}</li>
+    </ul>
+    <p>You may want to call them to follow up.</p>`;
+
+  await Promise.all(
+    admins.map((a: any) =>
+      sendEmail({ to: a.email, subject: `${employee.fullName} checked out`, html })
+    )
+  );
 }
 
 /**
@@ -294,16 +431,24 @@ async function finalizeSession(opts: {
   // Never let a back-dated check-out land before check-in (would yield negative /
   // zeroed durations and corrupt the day totals).
   const checkInMs = new Date(session.checkInAt).getTime();
-  const checkOutAt =
-    opts.checkOutAt.getTime() < checkInMs ? new Date(checkInMs) : opts.checkOutAt;
+  const checkOutAt = new Date(clampCheckOut(checkInMs, opts.checkOutAt.getTime()));
 
   session.checkOutAt = checkOutAt;
   session.checkOutLocation = { type: "Point", coordinates: [opts.lng, opts.lat] };
   session.checkOutAccuracyMeters = opts.accuracyMeters;
   session.status = opts.status;
 
-  // distance from site at check-out
-  const [siteLng, siteLat] = (await WorkSite.findById(session.siteId).lean())!.location.coordinates;
+  // distance from site at check-out — use the session's frozen geofence center.
+  let siteLat: number;
+  let siteLng: number;
+  if (session.geofence && session.geofence.lat != null) {
+    siteLat = session.geofence.lat;
+    siteLng = session.geofence.lng;
+  } else {
+    const ws = await WorkSite.findById(session.siteId).lean();
+    siteLng = ws!.location.coordinates[0];
+    siteLat = ws!.location.coordinates[1];
+  }
   session.checkOutDistanceMeters = haversineDistanceMeters(
     { lat: siteLat, lng: siteLng },
     { lat: opts.lat, lng: opts.lng }
@@ -320,6 +465,18 @@ async function finalizeSession(opts: {
   // including the away-gaps between sessions) — never just this one session.
   const totals = await recomputeDayTotals(session.attendanceDayId);
 
+  // Mid-day checkouts = the number of times the employee actually left the site
+  // and a session closed before the day's final close (= sessions − 1). A single
+  // continuous session means 0 — they never left, so outside time is GPS jitter.
+  const sessionCount = await AttendanceSession.countDocuments({
+    attendanceDayId: session.attendanceDayId,
+  });
+  const midDayCheckouts = Math.max(0, sessionCount - 1);
+  const outside = classifyOutsideForDay({
+    totalOutsideSeconds: totals.totalOutsideSeconds,
+    midDayCheckouts,
+  });
+
   const day = await AttendanceDay.findById(session.attendanceDayId);
   if (day) {
     day.lastCheckOutAt = session.checkOutAt;
@@ -329,9 +486,16 @@ async function finalizeSession(opts: {
     day.outsideVisitCount = totals.outsideVisitCount;
 
     const reasons = new Set(day.flagReasons || []);
-    if (totals.totalOutsideSeconds > 30 * 60) {
+    // Outside time only counts against the employee if they truly checked out and
+    // left during the day. With no mid-day checkout it's jitter -> full day present.
+    if (outside.flagExcessiveOutside) {
       day.isFlagged = true;
       reasons.add("excessive_outside_time");
+    } else if (!outside.outsideCounts) {
+      // Single continuous session: never flag for outside; if a prior partial
+      // finalize flagged it, clear that reason so the day reads as a full day.
+      reasons.delete("excessive_outside_time");
+      if (reasons.size === 0) day.isFlagged = false;
     }
     if (opts.reason) {
       reasons.add(opts.reason);
@@ -343,6 +507,14 @@ async function finalizeSession(opts: {
     }
     await day.save();
   }
+
+  // Best-effort: email the company admins so they can follow up / call.
+  try {
+    await notifyAdminOfCheckout(session, opts.reason);
+  } catch {
+    /* email is best-effort — never block check-out on it */
+  }
+
   return { ok: true as const, session, day };
 }
 
@@ -372,31 +544,9 @@ async function recomputeDayTotals(attendanceDayId: any, nowMs?: number) {
     else pingsBySession.set(key, [p]);
   }
 
-  let totalWorkSeconds = 0;
-  let totalInsideSeconds = 0;
-  let totalOutsideSeconds = 0;
-  let outsideVisitCount = 0;
-  let prevCheckOutMs: number | null = null;
-
-  for (const s of sessions) {
-    const startMs = new Date(s.checkInAt).getTime();
-    const endMs = s.checkOutAt ? new Date(s.checkOutAt).getTime() : (nowMs ?? Date.now());
-    totalWorkSeconds += Math.max(0, Math.floor((endMs - startMs) / 1000));
-
-    const summ = summarizePings(pingsBySession.get(String(s._id)) || [], String(s.siteId), endMs);
-    totalInsideSeconds += summ.totalInside;
-    totalOutsideSeconds += summ.totalOutside;
-    outsideVisitCount += summ.outsideVisitCount;
-
-    // Time spent away between the previous check-out and this check-in counts as outside.
-    if (prevCheckOutMs != null) {
-      totalOutsideSeconds += Math.max(0, Math.floor((startMs - prevCheckOutMs) / 1000));
-      outsideVisitCount += 1;
-    }
-    prevCheckOutMs = endMs;
-  }
-
-  return { totalWorkSeconds, totalInsideSeconds, totalOutsideSeconds, outsideVisitCount };
+  // Pure aggregation (cumulative work/inside/outside + away-gaps) — see
+  // attendance-logic.ts. The DB fetch lives here; the math is unit-tested there.
+  return computeDayTotals(sessions, pingsBySession, nowMs ?? Date.now());
 }
 
 /**
@@ -472,64 +622,46 @@ export async function autoCloseEndedShifts(): Promise<number> {
  */
 async function scheduleGate(
   employeeId: string,
-  workDate: string
+  workDate: string,
+  atMs: number = Date.now()
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const schedule = await EmployeeSchedule.findOne({
     employeeId: new Types.ObjectId(employeeId),
     workDate,
   }).lean();
   if (!schedule) return { ok: true };
-  if (!schedule.isWorkingDay) {
-    return { ok: false, reason: "Today is a scheduled day off — no check-in required." };
-  }
-  if (schedule.expectedStartAt && schedule.expectedEndAt) {
+
+  // Only the shift's grace is needed, and only for a working day with a window.
+  let graceMinutes = 0;
+  if (schedule.isWorkingDay && schedule.expectedStartAt && schedule.expectedEndAt) {
     const shift = await ShiftTemplate.findById(schedule.shiftTemplateId).lean();
-    const graceMs = (shift?.graceMinutes ?? 0) * 60_000;
-    const start = new Date(schedule.expectedStartAt).getTime() - graceMs;
-    const end = new Date(schedule.expectedEndAt).getTime();
-    const now = Date.now();
-    if (now < start || now > end) {
-      return { ok: false, reason: "You can only check in or out during your scheduled shift hours." };
-    }
+    graceMinutes = shift?.graceMinutes ?? 0;
   }
-  return { ok: true };
+  return evaluateScheduleGate(
+    {
+      isWorkingDay: schedule.isWorkingDay,
+      expectedStartAtMs: schedule.expectedStartAt
+        ? new Date(schedule.expectedStartAt).getTime()
+        : null,
+      expectedEndAtMs: schedule.expectedEndAt
+        ? new Date(schedule.expectedEndAt).getTime()
+        : null,
+    },
+    graceMinutes,
+    atMs
+  );
 }
 
-function summarizePings(
+/**
+ * Backward-compatible wrapper around the pure summarizeSessionPings (the siteId
+ * argument is unused). Kept so existing callers/tests keep working.
+ */
+export function summarizePings(
   pings: any[],
   _siteId: string,
   endTimeMs?: number
 ): { totalInside: number; totalOutside: number; outsideVisitCount: number } {
-  let totalInside = 0;
-  let totalOutside = 0;
-  let outsideVisitCount = 0;
-  let inOutsideRun = false;
-
-  const cap = endTimeMs ?? Date.now();
-  for (let i = 0; i < pings.length; i++) {
-    const p = pings[i];
-    const next = pings[i + 1];
-    const inside = !!p.isInsideGeofence;
-    // Clamp EVERY interval's end to the session end (checkout / "now"), so pings
-    // captured after the effective checkout don't add time and intervals can't be
-    // double-counted against the away-gap.
-    const rawEnd = next ? new Date(next.capturedAt).getTime() : cap;
-    const tEnd = Math.min(rawEnd, cap);
-    const dt = Math.max(0, Math.floor((tEnd - new Date(p.capturedAt).getTime()) / 1000));
-    if (inside) {
-      totalInside += dt;
-      if (inOutsideRun) {
-        inOutsideRun = false;
-      }
-    } else {
-      totalOutside += dt;
-      if (!inOutsideRun) {
-        outsideVisitCount++;
-        inOutsideRun = true;
-      }
-    }
-  }
-  return { totalInside, totalOutside, outsideVisitCount };
+  return summarizeSessionPings(pings, endTimeMs ?? Date.now());
 }
 
 export async function processPings(opts: {
@@ -558,9 +690,23 @@ export async function processPings(opts: {
   }).sort({ checkInAt: -1 });
   if (!session) return { ok: false as const, reason: "no_active_session" };
 
-  const site = await WorkSite.findById(session.siteId).lean();
-  if (!site) return { ok: false as const, reason: "no_site" };
-  const [siteLng, siteLat] = site.location.coordinates;
+  // Use the geofence SNAPSHOT taken at check-in, so an admin editing the site
+  // (or reassigning the employee) mid-shift can't move the geofence under them.
+  // Fall back to the live site for sessions created before snapshots existed.
+  let siteLat: number;
+  let siteLng: number;
+  let siteRadius: number;
+  if (session.geofence && session.geofence.lat != null) {
+    siteLat = session.geofence.lat;
+    siteLng = session.geofence.lng;
+    siteRadius = session.geofence.radiusMeters;
+  } else {
+    const site = await WorkSite.findById(session.siteId).lean();
+    if (!site) return { ok: false as const, reason: "no_site" };
+    siteLng = site.location.coordinates[0];
+    siteLat = site.location.coordinates[1];
+    siteRadius = site.radiusMeters;
+  }
 
   // Company timezone (cached) — used to evaluate the lunch-break window.
   const timezone = await getCompanyTimezone(opts.companyId);
@@ -591,6 +737,33 @@ export async function processPings(opts: {
       new Date(b.capturedAt ?? Date.now()).getTime()
   );
 
+  // Gap-based auto check-out: if tracking went silent for longer than the
+  // threshold (the employee closed the app / lost the foreground service), close
+  // the session at the LAST ping we actually received. Work/outside time are then
+  // computed up to that point, and the just-arrived ping is dropped — the employee
+  // must check in again. This makes closing the app effectively end the session.
+  if (env.PING_GAP_CHECKOUT_ENABLED && lastPing && sorted.length) {
+    const lastPingMs = new Date(lastPing.capturedAt).getTime();
+    const nextMs = sorted[0].capturedAt ? new Date(sorted[0].capturedAt).getTime() : Date.now();
+    if (isPingGapCheckout(lastPingMs, nextMs, env.PING_GAP_CHECKOUT_MINUTES * 60_000)) {
+      await finalizeSession({
+        session,
+        lat: lastPing.location.coordinates[1],
+        lng: lastPing.location.coordinates[0],
+        accuracyMeters: lastPing.accuracyMeters,
+        checkOutAt: new Date(lastPingMs),
+        status: "auto_closed",
+        reason: "auto_checkout_ping_gap",
+      });
+      return {
+        ok: true as const,
+        received: 0,
+        autoCheckedOut: true,
+        autoCheckoutAt: new Date(lastPingMs).toISOString(),
+      };
+    }
+  }
+
   const flagging: any[] = [];
   let autoCheckedOut = false;
   let autoCheckoutAt: Date | null = null;
@@ -599,15 +772,18 @@ export async function processPings(opts: {
     const { inside, distance } = isInsideGeofence(
       { lat: p.lat, lng: p.lng },
       { lat: siteLat, lng: siteLng },
-      site.radiusMeters,
+      siteRadius,
       p.accuracyMeters ?? 0
     );
     // Ignore unreliable readings: a ping whose reported GPS accuracy is worse than
     // the configured limit should NOT move the geofence state — otherwise junk
     // readings inflate "outside" time and cause false exits. Carry the last state.
-    const reliable =
-      p.accuracyMeters == null || p.accuracyMeters <= env.MAX_PING_ACCURACY_METERS;
-    const effectiveInside = reliable ? inside : currentlyInside;
+    const effectiveInside = effectiveInsideState(
+      inside,
+      p.accuracyMeters,
+      currentlyInside,
+      env.MAX_PING_ACCURACY_METERS
+    );
     const capturedAt = p.capturedAt ? new Date(p.capturedAt) : new Date();
     await LocationPing.create({
       attendanceDayId: session.attendanceDayId,
@@ -706,15 +882,17 @@ export async function processPings(opts: {
   // Suppressed during the lunch window (company timezone).
   if (env.AUTO_CHECKOUT_ENABLED && !autoCheckedOut) {
     const need = Math.max(1, env.AUTO_CHECKOUT_CONSECUTIVE_PINGS);
-    const threshold = site.radiusMeters + env.AUTO_CHECKOUT_BUFFER_METERS;
+    const threshold = siteRadius + env.AUTO_CHECKOUT_BUFFER_METERS;
     const latest = allPings[allPings.length - 1];
     const tail = allPings.slice(-need);
     // Each of the last N pings must be a RELIABLE reading that is beyond the
     // buffer. An inaccurate reading breaks the streak so junk can't check anyone out.
-    const reliableAway = (pp: any) =>
-      (pp.accuracyMeters == null || pp.accuracyMeters <= env.MAX_PING_ACCURACY_METERS) &&
-      (pp.distanceFromSiteMeters ?? 0) > threshold;
-    const sustainedAway = tail.length >= need && tail.every(reliableAway);
+    const sustainedAway = isSustainedAway(
+      tail,
+      need,
+      threshold,
+      env.MAX_PING_ACCURACY_METERS
+    );
     if (latest && sustainedAway) {
       // Back-date the check-out to when they crossed the site boundary (the open
       // outside-site log), falling back to the latest ping.
@@ -725,24 +903,45 @@ export async function processPings(opts: {
         .sort({ exitedAt: -1 })
         .lean();
       const leftAt = openLog ? new Date(openLog.exitedAt) : new Date(latest.capturedAt);
-      // Suppress during lunch — check BOTH the trigger time and the effective
-      // (back-dated) check-out time, so a lunch departure is never auto-closed.
-      const lunchPause =
-        env.AUTO_CHECKOUT_LUNCH_BREAK_ENABLED &&
-        (isWithinLocalTimeWindow(new Date(latest.capturedAt), timezone, env.AUTO_CHECKOUT_LUNCH_START, env.AUTO_CHECKOUT_LUNCH_END) ||
-          isWithinLocalTimeWindow(leftAt, timezone, env.AUTO_CHECKOUT_LUNCH_START, env.AUTO_CHECKOUT_LUNCH_END));
-      if (!lunchPause) {
+      // Lunch only suppresses auto-checkout WHILE the current ping is inside the
+      // lunch window. If the employee left during lunch but is still away after
+      // it ends, we check them out back-dated to lunch-end — paid through lunch,
+      // not for the afternoon they stayed absent.
+      const lunchEndMs = zonedDateTimeToUtc(
+        getWorkDateInTimezone(leftAt, timezone),
+        env.AUTO_CHECKOUT_LUNCH_END,
+        timezone
+      ).getTime();
+      const decision = resolveAutoCheckout({
+        leftAtMs: leftAt.getTime(),
+        lunchEnabled: env.AUTO_CHECKOUT_LUNCH_BREAK_ENABLED,
+        currentInLunch: isWithinLocalTimeWindow(
+          new Date(latest.capturedAt),
+          timezone,
+          env.AUTO_CHECKOUT_LUNCH_START,
+          env.AUTO_CHECKOUT_LUNCH_END
+        ),
+        leftInLunch: isWithinLocalTimeWindow(
+          leftAt,
+          timezone,
+          env.AUTO_CHECKOUT_LUNCH_START,
+          env.AUTO_CHECKOUT_LUNCH_END
+        ),
+        lunchEndMs,
+      });
+      if (!decision.suppress) {
+        const checkOutAt = new Date(decision.checkOutAtMs);
         await finalizeSession({
           session,
           lat: latest.location.coordinates[1],
           lng: latest.location.coordinates[0],
           accuracyMeters: latest.accuracyMeters,
-          checkOutAt: leftAt,
+          checkOutAt,
           status: "auto_closed",
           reason: "auto_checkout_left_site",
         });
         autoCheckedOut = true;
-        autoCheckoutAt = leftAt;
+        autoCheckoutAt = checkOutAt;
       }
     }
   }

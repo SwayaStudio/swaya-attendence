@@ -88,6 +88,13 @@ export const env = {
   AUTO_CHECKOUT_LUNCH_BREAK_ENABLED: bool("AUTO_CHECKOUT_LUNCH_BREAK_ENABLED", true),
   AUTO_CHECKOUT_LUNCH_START: process.env.AUTO_CHECKOUT_LUNCH_START || "13:00",
   AUTO_CHECKOUT_LUNCH_END: process.env.AUTO_CHECKOUT_LUNCH_END || "14:00",
+  // Gap-based auto check-out: if tracking goes silent for longer than this many
+  // minutes (the employee closed the app / lost the foreground service), close
+  // the session at the LAST ping received. Kept comfortably above the 3-minute
+  // ping interval so a few dropped pings on a flaky network (lifts, basements,
+  // dead zones) don't end the shift — 15 minutes tolerates ~4 missed pings.
+  PING_GAP_CHECKOUT_ENABLED: bool("PING_GAP_CHECKOUT_ENABLED", true),
+  PING_GAP_CHECKOUT_MINUTES: num("PING_GAP_CHECKOUT_MINUTES", 15),
   // Shared secret Vercel Cron sends as a Bearer token to the close-shifts job.
   CRON_SECRET: process.env.CRON_SECRET || "",
   SMTP_HOST: process.env.SMTP_HOST || "",

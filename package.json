@@ -10,6 +10,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "seed": "node --env-file=.env.local node_modules/tsx/dist/cli.mjs scripts/seed.ts",
     "cypress": "cypress open",
     "cypress:headless": "cypress run",
@@ -26,7 +28,11 @@
     "@capacitor/android": "^5.7.8",
     "@capacitor/app": "^5.0.8",
     "@capacitor/core": "^5.7.8",
+    "@capacitor/device": "^5.0.8",
+    "@capacitor/geolocation": "^5.0.8",
     "@capacitor/haptics": "^5.0.8",
+    "@capacitor/local-notifications": "^5.0.8",
+    "@capacitor/network": "^5.0.8",
     "@capacitor/preferences": "^5.0.8",
     "@hookform/resolvers": "^3.9.0",
     "@radix-ui/react-avatar": "^1.1.0",
@@ -78,10 +84,12 @@
     "cypress": "^13.14.1",
     "eslint": "^8.57.1",
     "eslint-config-next": "14.2.15",
+    "jsdom": "^25.0.1",
     "postcss": "^8.4.47",
     "start-server-and-test": "^2.0.8",
     "tailwindcss": "^3.4.13",
     "tsx": "^4.19.1",
-    "typescript": "^5.6.2"
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.9"
   }
 }

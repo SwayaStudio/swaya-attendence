@@ -3,7 +3,7 @@
  * Mongo's Date is UTC; we store workDate as "YYYY-MM-DD" in the company's timezone
  * to avoid day-boundary mismatches near midnight.
  */
-import { formatInTimeZone, toZonedTime } from "date-fns-tz";
+import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 
 export function getWorkDateInTimezone(date: Date, timezone: string): string {
   return formatInTimeZone(date, timezone, "yyyy-MM-dd");
@@ -13,19 +13,19 @@ export function todayWorkDate(timezone: string): string {
   return getWorkDateInTimezone(new Date(), timezone);
 }
 
-/** Build a Date for a given workDate string + HH:mm in the given timezone (returns UTC Date). */
+/**
+ * Build a Date for a given workDate string + HH:mm in the given timezone (returns
+ * UTC Date). Uses date-fns-tz's `fromZonedTime`, which interprets the wall-clock
+ * time AS the target timezone and returns the correct UTC instant — independent
+ * of the host process's own timezone (the previous implementation was only
+ * correct when the server ran in UTC).
+ */
 export function zonedDateTimeToUtc(
   workDate: string,
   hhmm: string,
   timezone: string
 ): Date {
-  // Build an ISO string interpreted in `timezone` by formatting the parts.
-  const [y, m, d] = workDate.split("-").map(Number);
-  const [hh, mm] = hhmm.split(":").map(Number);
-  // Use a UTC anchor and adjust by the offset of the target timezone at that moment.
-  const anchor = new Date(Date.UTC(y, m - 1, d, hh, mm, 0));
-  const offsetMin = getTimezoneOffsetMinutes(timezone, anchor);
-  return new Date(anchor.getTime() - offsetMin * 60_000);
+  return fromZonedTime(`${workDate}T${hhmm}:00`, timezone);
 }
 
 /** All work-date strings from `from` to `to` inclusive (YYYY-MM-DD). */
@@ -56,14 +56,4 @@ export function isWithinLocalTimeWindow(
 ): boolean {
   const cur = formatInTimeZone(instant, timezone, "HH:mm");
   return cur >= startHHmm && cur < endHHmm;
-}
-
-function getTimezoneOffsetMinutes(tz: string, instant: Date): number {
-  // Compare parts in tz vs UTC at the same instant.
-  const zoned = toZonedTime(instant, tz);
-  const utc = new Date(instant);
-  // getTimezoneOffset is opposite sign; we compute tz - utc in minutes.
-  const z = zoned.getTime();
-  const u = utc.getTime();
-  return Math.round((z - u) / 60_000);
 }

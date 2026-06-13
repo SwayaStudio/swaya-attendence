@@ -14,6 +14,10 @@ export const GET = withApi(async (req: NextRequest) => {
   if (env.CRON_SECRET) {
     const auth = req.headers.get("authorization");
     if (auth !== `Bearer ${env.CRON_SECRET}`) return fail("Unauthorized", 401);
+  } else if (env.NODE_ENV === "production") {
+    // Fail CLOSED: never expose an unauthenticated state-changing endpoint in
+    // production. Without a configured secret the job is disabled, not open.
+    return fail("Cron secret not configured", 503);
   }
   const closed = await autoCloseEndedShifts();
   return ok({ closed });
