@@ -44,6 +44,13 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!-- Receives OS geofence ENTER/EXIT transitions even when the app is
+             killed. Triggered via our own PendingIntent, so it is not exported. -->
+        <receiver
+            android:name=".GeofenceBroadcastReceiver"
+            android:enabled="true"
+            android:exported="false" />
     </application>
 
     <!-- Permissions -->

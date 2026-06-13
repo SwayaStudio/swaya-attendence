@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -303,6 +303,35 @@ export default function EmployeePage() {
       }
     })();
   }, [isCheckedIn]);
+
+  // Native OS-geofence fallback (Android): while checked in, register a ~100m
+  // geofence around the site so ENTER/EXIT is still captured if the app is later
+  // killed. Removed on check-out. The precise ping system stays the primary path.
+  const siteCoords = useMemo(
+    () =>
+      Array.isArray(site?.location?.coordinates)
+        ? {
+            lat: site.location.coordinates[1] as number,
+            lng: site.location.coordinates[0] as number,
+            radiusMeters: site.radiusMeters as number | undefined,
+          }
+        : null,
+    [site?.location?.coordinates, site?.radiusMeters]
+  );
+  useEffect(() => {
+    (async () => {
+      try {
+        const { enableGeofenceFallback, disableGeofenceFallback } = await import("@/lib/geofence");
+        if (isCheckedIn && siteCoords) {
+          await enableGeofenceFallback(siteCoords);
+        } else {
+          await disableGeofenceFallback();
+        }
+      } catch {
+        /* not native / plugin unavailable */
+      }
+    })();
+  }, [isCheckedIn, siteCoords]);
 
   const activeSession = today?.sessions?.find(
     (s: any) => s.status === "active" || s.status === "flagged"

@@ -57,6 +57,10 @@ export type CheckInInput = {
   // When a check-in was made OFFLINE and is being synced later, this is the time
   // it actually happened. Defaults to "now" for normal online check-ins.
   capturedAt?: string;
+  // Set when this check-in was triggered by the native OS geofence (app killed).
+  // The OS geofence is a wider ~100m ring, so the precise radius rejection is
+  // skipped — the OS already confirmed the employee crossed into the site area.
+  geofenceTriggered?: boolean;
 };
 
 export type CheckInResult =
@@ -184,7 +188,12 @@ export async function processCheckIn(input: CheckInInput): Promise<CheckInResult
   if (!found) {
     return { ok: false, reason: "no_assignment" };
   }
-  if (found.distance > found.site.radiusMeters + (input.accuracyMeters ?? 0)) {
+  // A native-geofence-triggered check-in is validated by the OS's wider ~100m
+  // ring, so skip the precise 20m rejection (the app-open path still enforces it).
+  if (
+    !input.geofenceTriggered &&
+    found.distance > found.site.radiusMeters + (input.accuracyMeters ?? 0)
+  ) {
     return {
       ok: false,
       reason: "outside_geofence",
@@ -312,6 +321,11 @@ export async function processCheckIn(input: CheckInInput): Promise<CheckInResult
     day.isFlagged = true;
     day.flagReasons = Array.from(new Set([...(day.flagReasons || []), "mock_location_at_check_in"]));
   }
+  if (input.geofenceTriggered) {
+    // Audit trail: this check-in came from the coarse native geofence (app was
+    // killed), not the precise app-open path. Not a flag, just a marker.
+    day.flagReasons = Array.from(new Set([...(day.flagReasons || []), "geofence_check_in"]));
+  }
   await day.save();
 
   return {
@@ -370,6 +384,78 @@ export async function processCheckOut(opts: {
 }
 
 /**
+ * NATIVE GEOFENCE FALLBACK (app killed). These run ONLY when the OS geofence
+ * fires while the precise app-open ping system is dead. They reuse the same
+ * building blocks (finalizeSession / processCheckIn) so the primary logic is
+ * untouched. The OS geofence is a wider ~100m ring; events are coarse (2-5 min).
+ */
+
+/** EXIT: the employee crossed out of the site geofence — auto check them out. */
+export async function processGeofenceExit(opts: {
+  employeeId: string;
+  companyId: string;
+  lat: number;
+  lng: number;
+  accuracyMeters?: number;
+  capturedAt?: string;
+}) {
+  await connectDB();
+  const at = opts.capturedAt ? new Date(opts.capturedAt) : new Date();
+  // Automatic OS-detected exit — no schedule gate (mirrors the sustained-absence
+  // and end-of-shift auto-closes, which also bypass the manual gate).
+  const session = await AttendanceSession.findOne({
+    employeeId: new Types.ObjectId(opts.employeeId),
+    status: { $in: ["active", "flagged"] },
+  }).sort({ checkInAt: -1 });
+  if (!session) return { ok: false as const, reason: "no_active_session" };
+  const { day } = await finalizeSession({
+    session,
+    lat: opts.lat,
+    lng: opts.lng,
+    accuracyMeters: opts.accuracyMeters,
+    checkOutAt: at,
+    status: "auto_closed",
+    reason: "auto_checkout_geofence_exit",
+  });
+  return { ok: true as const, session, day };
+}
+
+/** ENTER: the employee crossed into the site geofence — auto check them in. */
+export async function processGeofenceEnter(opts: {
+  employeeId: string;
+  companyId: string;
+  lat: number;
+  lng: number;
+  accuracyMeters?: number;
+  deviceId?: string;
+  capturedAt?: string;
+}) {
+  await connectDB();
+  // If a session is already open (e.g. the app-open path already checked them
+  // in), do nothing — the precise logic wins.
+  const existing = await AttendanceSession.findOne({
+    employeeId: new Types.ObjectId(opts.employeeId),
+    status: { $in: ["active", "flagged"] },
+  })
+    .select("_id")
+    .lean();
+  if (existing) return { ok: true as const, alreadyActive: true };
+
+  const timezone = await getCompanyTimezone(opts.companyId);
+  return processCheckIn({
+    employeeId: opts.employeeId,
+    companyId: opts.companyId,
+    timezone,
+    lat: opts.lat,
+    lng: opts.lng,
+    accuracyMeters: opts.accuracyMeters,
+    deviceId: opts.deviceId ?? "geofence",
+    capturedAt: opts.capturedAt,
+    geofenceTriggered: true,
+  });
+}
+
+/**
  * Best-effort email to the company's admins when an employee checks out, so they
  * can follow up (e.g. call the employee). Includes name, code, phone, time, reason.
  */
@@ -391,7 +477,9 @@ async function notifyAdminOfCheckout(session: any, reason?: string) {
         ? "Automatic — shift ended"
         : reason === "auto_checkout_ping_gap"
           ? "Automatic — app closed / tracking lost"
-          : "Manual check-out";
+          : reason === "auto_checkout_geofence_exit"
+            ? "Automatic — left the site (geofence, app closed)"
+            : "Manual check-out";
 
   const html = `
     <p><b>${employee.fullName}</b> has checked out.</p>

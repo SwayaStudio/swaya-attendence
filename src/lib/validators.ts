@@ -131,6 +131,15 @@ export const HolidaySchema = z.object({
   holidayDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 });
 
+export const GeofenceEventSchema = z.object({
+  token: z.string().min(10).max(2000),
+  transition: z.enum(["ENTER", "EXIT"]),
+  lat: z.number().gte(-90).lte(90),
+  lng: z.number().gte(-180).lte(180),
+  accuracy: z.number().min(0).max(10_000).optional(),
+  capturedAt: z.string().datetime().optional(),
+});
+
 export const ReviewSchema = z.object({
   status: z.enum(["approved", "rejected"]),
   reviewerNote: z.string().max(2000).optional(),
