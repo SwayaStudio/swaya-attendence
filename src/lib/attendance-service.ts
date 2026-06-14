@@ -6,6 +6,7 @@ import { Types } from "mongoose";
 import { connectDB } from "./db";
 import {
   AttendanceDay,
+  AttendanceEvent,
   AttendanceSession,
   EmployeeSchedule,
   EmployeeSiteAssignment,
@@ -28,6 +29,7 @@ import {
   classifyOutsideForDay,
   resolveAutoCheckout,
   isPingGapCheckout,
+  deriveCheckoutSource,
 } from "./attendance-logic";
 import {
   todayWorkDate,
@@ -328,6 +330,24 @@ export async function processCheckIn(input: CheckInInput): Promise<CheckInResult
   }
   await day.save();
 
+  // Ledger: record the check-in event (manual vs native-geofence ENTER).
+  await recordAttendanceEvent({
+    companyId: input.companyId,
+    employeeId: input.employeeId,
+    attendanceDayId: day._id,
+    sessionId: session._id,
+    siteId: found.site._id,
+    type: "check-in",
+    source: input.geofenceTriggered ? "geofence_enter" : "manual",
+    at,
+    workDate,
+    lat: input.lat,
+    lng: input.lng,
+    accuracyMeters: input.accuracyMeters,
+    distanceFromSiteMeters: found.distance,
+    sessionStatus: session.status,
+  });
+
   return {
     ok: true,
     attendanceDay: day.toObject(),
@@ -500,6 +520,51 @@ async function notifyAdminOfCheckout(session: any, reason?: string) {
 }
 
 /**
+ * Append one row to the immutable check-in/out ledger (AttendanceEvent). Records
+ * every event with how it happened, indexed by work date, for later auditing.
+ * Best-effort: never blocks or fails the attendance flow.
+ */
+async function recordAttendanceEvent(e: {
+  companyId: any;
+  employeeId: any;
+  attendanceDayId: any;
+  sessionId: any;
+  siteId: any;
+  type: "check-in" | "check-out";
+  source: string;
+  at: Date;
+  workDate: string;
+  lat?: number;
+  lng?: number;
+  accuracyMeters?: number;
+  distanceFromSiteMeters?: number;
+  sessionStatus?: string;
+}) {
+  try {
+    await AttendanceEvent.create({
+      companyId: new Types.ObjectId(String(e.companyId)),
+      employeeId: new Types.ObjectId(String(e.employeeId)),
+      attendanceDayId: e.attendanceDayId,
+      sessionId: e.sessionId,
+      siteId: e.siteId,
+      type: e.type,
+      source: e.source,
+      at: e.at,
+      workDate: e.workDate,
+      location:
+        e.lat != null && e.lng != null
+          ? { type: "Point", coordinates: [e.lng, e.lat] }
+          : null,
+      accuracyMeters: e.accuracyMeters,
+      distanceFromSiteMeters: e.distanceFromSiteMeters,
+      sessionStatus: e.sessionStatus,
+    });
+  } catch {
+    /* ledger is best-effort — never block check-in/out on it */
+  }
+}
+
+/**
  * Close out an attendance session and roll its summary up to the day.
  * Shared by manual check-out and the automatic geofence-exit check-out.
  * `checkOutAt` is the effective end time (for auto check-out this is the
@@ -595,6 +660,25 @@ async function finalizeSession(opts: {
     }
     await day.save();
   }
+
+  // Ledger: record the check-out event with how it happened (manual, geofence
+  // exit, shift end, sustained absence, ping gap).
+  await recordAttendanceEvent({
+    companyId: session.companyId,
+    employeeId: session.employeeId,
+    attendanceDayId: session.attendanceDayId,
+    sessionId: session._id,
+    siteId: session.siteId,
+    type: "check-out",
+    source: deriveCheckoutSource(opts.reason),
+    at: checkOutAt,
+    workDate: day?.workDate ?? getWorkDateInTimezone(checkOutAt, "UTC"),
+    lat: opts.lat,
+    lng: opts.lng,
+    accuracyMeters: opts.accuracyMeters,
+    distanceFromSiteMeters: session.checkOutDistanceMeters,
+    sessionStatus: opts.status,
+  });
 
   // Best-effort: email the company admins so they can follow up / call.
   try {

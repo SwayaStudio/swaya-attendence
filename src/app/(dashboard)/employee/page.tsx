@@ -277,18 +277,32 @@ export default function EmployeePage() {
   const isOnLeave = today?.leave != null;
   const noCheckInNeeded = isOnLeave || isDayOff;
 
-  // While checked in: tick the work timer every second, and re-fetch the day
-  // every 15s so the (server-computed) outside time stays current.
+  // Tick the live work timer every second while checked in.
   useEffect(() => {
     if (!isCheckedIn) return;
     setNowTs(Date.now());
     const tick = setInterval(() => setNowTs(Date.now()), 1000);
-    const poll = setInterval(() => loadToday(), 15000);
-    return () => {
-      clearInterval(tick);
-      clearInterval(poll);
-    };
+    return () => clearInterval(tick);
+  }, [isCheckedIn]);
+
+  // ALWAYS poll the server so changes made WITHOUT a tap show up — e.g. a native
+  // geofence ENTER auto check-in (or EXIT auto check-out) that happened while the
+  // app was idle/backgrounded. Faster while checked in (for live outside time),
+  // slower while checked out (just watching for a geofence-driven check-in).
+  useEffect(() => {
+    const poll = setInterval(() => loadToday(), isCheckedIn ? 15000 : 30000);
+    return () => clearInterval(poll);
   }, [isCheckedIn, loadToday]);
+
+  // Re-fetch the moment the app returns to the foreground, so reopening it
+  // reflects any geofence-driven check-in/out immediately (no 30s wait).
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") loadToday();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [loadToday]);
 
   // Persist the checked-in state natively (Capacitor Preferences) so the Android
   // BootReceiver knows whether to prompt the employee to resume tracking after a

@@ -216,6 +216,32 @@ export function resolveShiftEnd(startMs: number, endMs: number): number {
 }
 
 /**
+ * Map an internal auto-checkout `reason` to the audit-ledger `source` label
+ * (used by the AttendanceEvent log). No reason = a manual check-out.
+ */
+export function deriveCheckoutSource(
+  reason: string | undefined | null
+):
+  | "manual"
+  | "geofence_exit"
+  | "auto_sustained_absence"
+  | "auto_shift_end"
+  | "auto_ping_gap" {
+  switch (reason) {
+    case "auto_checkout_geofence_exit":
+      return "geofence_exit";
+    case "auto_checkout_left_site":
+      return "auto_sustained_absence";
+    case "auto_checkout_shift_ended":
+      return "auto_shift_end";
+    case "auto_checkout_ping_gap":
+      return "auto_ping_gap";
+    default:
+      return "manual";
+  }
+}
+
+/**
  * True when the silence between the last received ping and the next one exceeds
  * the gap threshold — i.e. tracking stopped (app closed / service killed) long
  * enough that we should auto-check-out the employee at the last known ping.

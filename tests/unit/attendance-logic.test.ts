@@ -11,6 +11,7 @@ import {
   resolveShiftEnd,
   resolveAutoCheckout,
   isPingGapCheckout,
+  deriveCheckoutSource,
   classifyOutsideForDay,
   GATE_DAY_OFF_REASON,
   GATE_OUT_OF_HOURS_REASON,
@@ -278,6 +279,23 @@ describe("resolveShiftEnd (overnight shift)", () => {
   });
   it("treats an equal end as overnight (+1 day)", () => {
     expect(resolveShiftEnd(ms(9), ms(9))).toBe(ms(9) + 86_400_000);
+  });
+});
+
+// ===========================================================================
+// Audit-ledger source derivation.
+// ===========================================================================
+describe("deriveCheckoutSource", () => {
+  it("maps each auto-checkout reason to its ledger source", () => {
+    expect(deriveCheckoutSource("auto_checkout_geofence_exit")).toBe("geofence_exit");
+    expect(deriveCheckoutSource("auto_checkout_left_site")).toBe("auto_sustained_absence");
+    expect(deriveCheckoutSource("auto_checkout_shift_ended")).toBe("auto_shift_end");
+    expect(deriveCheckoutSource("auto_checkout_ping_gap")).toBe("auto_ping_gap");
+  });
+  it("defaults to manual when there is no reason", () => {
+    expect(deriveCheckoutSource(undefined)).toBe("manual");
+    expect(deriveCheckoutSource(null)).toBe("manual");
+    expect(deriveCheckoutSource("something_else")).toBe("manual");
   });
 });
 

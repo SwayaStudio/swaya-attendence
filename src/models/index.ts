@@ -10,6 +10,7 @@ export { ShiftTemplate } from "./ShiftTemplate";
 export { EmployeeSchedule } from "./EmployeeSchedule";
 export { AttendanceDay } from "./AttendanceDay";
 export { AttendanceSession } from "./AttendanceSession";
+export { AttendanceEvent } from "./AttendanceEvent";
 export { LocationPing } from "./LocationPing";
 export { GeofenceEvent } from "./GeofenceEvent";
 export { OutsideSiteLog } from "./OutsideSiteLog";
