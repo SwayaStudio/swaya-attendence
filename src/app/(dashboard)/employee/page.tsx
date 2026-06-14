@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -318,26 +318,26 @@ export default function EmployeePage() {
     })();
   }, [isCheckedIn]);
 
-  // Native OS-geofence fallback (Android): while checked in, register a ~100m
-  // geofence around the site so ENTER/EXIT is still captured if the app is later
-  // killed. Removed on check-out. The precise ping system stays the primary path.
-  const siteCoords = useMemo(
-    () =>
-      Array.isArray(site?.location?.coordinates)
-        ? {
-            lat: site.location.coordinates[1] as number,
-            lng: site.location.coordinates[0] as number,
-            radiusMeters: site.radiusMeters as number | undefined,
-          }
-        : null,
-    [site?.location?.coordinates, site?.radiusMeters]
-  );
+  // Native OS-geofence fallback (Android): register a geofence around the work
+  // site whenever the employee HAS a site for today — kept active whether checked
+  // in OR out, so the OS can fire BOTH the leave (EXIT -> auto check-out) and the
+  // return (ENTER -> auto check-in) even after the app is killed. Removed only on
+  // a day off / leave / no site. The server schedule-gate still guards check-ins.
+  // Depend on the primitive lat/lng/radius (not the object) so the 30s `today`
+  // poll doesn't needlessly re-register the geofence each time.
+  const siteLat = Array.isArray(site?.location?.coordinates)
+    ? (site.location.coordinates[1] as number)
+    : null;
+  const siteLng = Array.isArray(site?.location?.coordinates)
+    ? (site.location.coordinates[0] as number)
+    : null;
+  const siteRadius = (site?.radiusMeters as number | undefined) ?? undefined;
   useEffect(() => {
     (async () => {
       try {
         const { enableGeofenceFallback, disableGeofenceFallback } = await import("@/lib/geofence");
-        if (isCheckedIn && siteCoords) {
-          await enableGeofenceFallback(siteCoords);
+        if (siteLat != null && siteLng != null && !noCheckInNeeded) {
+          await enableGeofenceFallback({ lat: siteLat, lng: siteLng, radiusMeters: siteRadius });
         } else {
           await disableGeofenceFallback();
         }
@@ -345,7 +345,7 @@ export default function EmployeePage() {
         /* not native / plugin unavailable */
       }
     })();
-  }, [isCheckedIn, siteCoords]);
+  }, [siteLat, siteLng, siteRadius, noCheckInNeeded]);
 
   const activeSession = today?.sessions?.find(
     (s: any) => s.status === "active" || s.status === "flagged"
